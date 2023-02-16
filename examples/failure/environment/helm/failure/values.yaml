@@ -4,7 +4,7 @@ replicaCount: 2
 
 image:
   repository: mul8/sf-failure
-  tag: latest
+  tag: v1
   pullPolicy: Always
 
 nameOverride: ""

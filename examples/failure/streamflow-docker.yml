@@ -1,0 +1,42 @@
+#!/usr/bin/env streamflow
+version: v1.0
+workflows:
+  master:
+    type: cwl
+    config:
+      file: cwl/main.cwl
+      settings: cwl/config.yml
+    bindings:
+      - step: /open_step
+        target:
+          deployment: tool-image
+          service: debian
+      - step: /sum_step
+        target:
+          deployment: tool-image
+          service: debian
+      - step: /comb_step
+        target:
+          deployment: tool-image
+          service: debian
+
+deployments:
+  tool-image:
+    type: docker
+    config:
+      image: mul8/sf-failure:v1
+
+failureManager:
+  enabled: True
+  type: default
+  config:
+    max_retries: 50
+    retry_delay: 5
+
+scheduler:
+  type: default
+  config:
+    retry_delay: 10
+
+checkpointManager:
+  enabled: False
