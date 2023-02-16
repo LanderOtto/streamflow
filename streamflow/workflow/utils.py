@@ -6,7 +6,8 @@ from streamflow.workflow.token import (
     IterationTerminationToken,
     ListToken,
     ObjectToken,
-    TerminationToken, JobToken,
+    TerminationToken,
+    JobToken,
 )
 
 
@@ -46,31 +47,46 @@ def contains_file(token: Token) -> bool:
     if isinstance(token, CWLFileToken):
         return True
     elif isinstance(token, ListToken):
-        return any([ contains_file(t) for t in token.value ])
+        return any([contains_file(t) for t in token.value])
     elif isinstance(token, ObjectToken):
         return contains_file(token.value)
-    elif isinstance(token, JobToken) or isinstance(token, TerminationToken) or isinstance(token, IterationTerminationToken):
+    elif (
+        isinstance(token, JobToken)
+        or isinstance(token, TerminationToken)
+        or isinstance(token, IterationTerminationToken)
+    ):
         return False
     elif isinstance(token, Token):
         return contains_file(token.value)
     else:
-        return isinstance(token, dict) and 'class' in token and (token['class'] == 'File' or token['class'] == 'Directory')
-
+        return (
+            isinstance(token, dict)
+            and "class" in token
+            and (token["class"] == "File" or token["class"] == "Directory")
+        )
 
 
 def get_file(token: Token) -> MutableSequence[dict]:
     if isinstance(token, CWLFileToken):
         return [token.value]
     elif isinstance(token, ListToken):
-        return [ inner_t for outer_t in token.value for inner_t in get_file(outer_t)]
+        return [inner_t for outer_t in token.value for inner_t in get_file(outer_t)]
     elif isinstance(token, ObjectToken):
         return get_file(token.value)
-    elif isinstance(token, JobToken) or isinstance(token, TerminationToken) or isinstance(token, IterationTerminationToken):
+    elif (
+        isinstance(token, JobToken)
+        or isinstance(token, TerminationToken)
+        or isinstance(token, IterationTerminationToken)
+    ):
         return []
     elif isinstance(token, Token):
         return get_file(token.value)
     else:
-        if isinstance(token, dict) and 'class' in token and (token['class'] == 'File' or token['class'] == 'Directory'):
+        if (
+            isinstance(token, dict)
+            and "class" in token
+            and (token["class"] == "File" or token["class"] == "Directory")
+        ):
             return [token]
         else:
             return []
