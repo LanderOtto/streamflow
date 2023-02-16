@@ -692,3 +692,8 @@ class Workflow(PersistableEntity):
         await asyncio.gather(
             *(asyncio.create_task(step.save(context)) for step in self.steps.values())
         )
+
+    def add_port(self, port: Port):
+        self.ports[port.name] = port
+    def add_step(self, step: Step):
+        self.steps[step.name] = step
