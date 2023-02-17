@@ -97,7 +97,6 @@ async def _search_lost_steps(original_workflow, step_failed):
             suspended.remove(current_step)
         visited.append(current_step)
         for step_port_name, port in current_step.get_input_ports().items():
-            # TODO: non aggiungere gli step __deploy__ ma attaccarsi ai deploy del workflow originale
             if isinstance(port, JobPort):
                 add_steps_by_port(port, to_visit, condition)
             else:
@@ -139,31 +138,23 @@ async def _create_graph(
     step_loaded.status = Status.WAITING
     step_loaded.terminated = False
     for in_port in original_step.get_input_ports().values():
-        if not isinstance(in_port, ConnectorPort): # it used the ConnectorPort of original workflow
-            input_ports_loaded.append(await loading_context.load_port(
-                context, in_port.persistent_id
-            ))
+        if not isinstance(
+            in_port, ConnectorPort
+        ):  # it used the ConnectorPort of original workflow
+            input_ports_loaded.append(
+                await loading_context.load_port(context, in_port.persistent_id)
+            )
             input_ports_loaded[-1].workflow = new_workflow
     for out_port in original_step.get_output_ports().values():
-        output_ports_loaded.append(await loading_context.load_port(
-            context, out_port.persistent_id
-        ))
+        output_ports_loaded.append(
+            await loading_context.load_port(context, out_port.persistent_id)
+        )
         output_ports_loaded[-1].workflow = new_workflow
     new_workflow.add_step(step_loaded)
     for port in input_ports_loaded + output_ports_loaded:
         if port.name not in new_workflow.ports.keys():
             new_workflow.add_port(port)
     return output_ports_loaded
-
-
-def search_step_by_output_port(searched_port, workflow):
-    for step in workflow.steps.values():
-        for port in step.get_output_ports().values():
-            if searched_port.name == port.name:
-                return (step, searched_port)
-    raise FailureHandlingException(
-        f"Step not found by output port {searched_port.name}"
-    )
 
 
 class DefaultFailureManager(FailureManager):
@@ -274,16 +265,15 @@ class DefaultFailureManager(FailureManager):
         inner_output_ports = []
         rollback_steps = await _search_lost_steps(workflow, step_failed)
         for curr_step in rollback_steps:
-            output_ports = await _create_graph(
+            for output_port in await _create_graph(
                 curr_step, context, loading_context, new_workflow
-            )
-            for port in output_ports:
-                if port not in inner_output_ports:
-                    inner_output_ports.append(port)
+            ):
+                if output_port not in inner_output_ports:
+                    inner_output_ports.append(output_port)
 
         # fix ports queue and tokens
         for port in new_workflow.ports.values():
-            # reset queues in the ConnectorPort of steps to rollback
+            # reset queue in the ConnectorPort of steps to rollback
             if isinstance(port, ConnectorPort):
                 for input_step in port.queues.keys():
                     if input_step in new_workflow.steps.keys():
@@ -295,14 +285,11 @@ class DefaultFailureManager(FailureManager):
                 for token in workflow.ports[port.name].token_list:
                     port.put(token)
 
-
         # the output port is the same port of the step failed
         for key, port in (
             new_workflow.steps[step_failed.name].get_output_ports().items()
         ):
             new_workflow.output_ports[key] = port.name
-
-
 
         # TODO: agganciare le porte di output del workflow con le porte di output dello step che si sta rieseguendo
         print("VIAAAAAAAAAAAAAA")
