@@ -129,32 +129,31 @@ async def _create_graph(
 ):
     if isinstance(original_step, DeployStep):
         port = original_step.get_output_port()
-        if port.name not in new_workflow.ports.keys():
-            new_workflow.add_port(port)
+        new_workflow.add_port(port)
         return []
 
+    input_ports_loaded = []
+    output_ports_loaded = []
     step_loaded = await loading_context.load_step(context, original_step.persistent_id)
     step_loaded.workflow = new_workflow
     step_loaded.status = Status.WAITING
     step_loaded.terminated = False
-    input_ports_loaded = {}
-    output_ports_loaded = {}
-    original_input_ports = original_step.get_input_ports()
-    for key, in_port in original_input_ports.items():
-        input_ports_loaded[key] = await loading_context.load_port(
-            context, in_port.persistent_id
-        )
-        input_ports_loaded[key].workflow = new_workflow
-    for key, out_port in original_step.get_output_ports().items():
-        output_ports_loaded[key] = await loading_context.load_port(
+    for in_port in original_step.get_input_ports().values():
+        if not isinstance(in_port, ConnectorPort): # it used the ConnectorPort of original workflow
+            input_ports_loaded.append(await loading_context.load_port(
+                context, in_port.persistent_id
+            ))
+            input_ports_loaded[-1].workflow = new_workflow
+    for out_port in original_step.get_output_ports().values():
+        output_ports_loaded.append(await loading_context.load_port(
             context, out_port.persistent_id
-        )
-        output_ports_loaded[key].workflow = new_workflow
+        ))
+        output_ports_loaded[-1].workflow = new_workflow
     new_workflow.add_step(step_loaded)
-    for port in itertools.chain(input_ports_loaded.values(), output_ports_loaded.values()):
+    for port in input_ports_loaded + output_ports_loaded:
         if port.name not in new_workflow.ports.keys():
             new_workflow.add_port(port)
-    return output_ports_loaded.values()
+    return output_ports_loaded
 
 
 def search_step_by_output_port(searched_port, workflow):
@@ -282,20 +281,20 @@ class DefaultFailureManager(FailureManager):
                 if port not in inner_output_ports:
                     inner_output_ports.append(port)
 
-        # foreach ports in the new workflow
-        # if the port is not the output port of any step, it is a input port of new workflow
-        # search in the original workflow the step where it is output port
-        workflow_input_ports = [
-            search_step_by_output_port(port, workflow)
-            for port_name, port in new_workflow.ports.items()
-            if port not in inner_output_ports
-        ]
+        # fix ports queue and tokens
+        for port in new_workflow.ports.values():
+            # reset queues in the ConnectorPort of steps to rollback
+            if isinstance(port, ConnectorPort):
+                for input_step in port.queues.keys():
+                    if input_step in new_workflow.steps.keys():
+                        port.reset(input_step)
 
-        # attach the new workflow input port at the output port of the steps (which output is saved) original workflow
-        for step, input_port in workflow_input_ports:
-            token = workflow.ports[input_port.name].token_list[0]
-            input_port.put(token)
-            input_port.put(TerminationToken())
+            # if the port is not the output port of any step then its data are available
+            # add the tokens taken from original workflow
+            elif port not in inner_output_ports:
+                for token in workflow.ports[port.name].token_list:
+                    port.put(token)
+
 
         # the output port is the same port of the step failed
         for key, port in (
@@ -303,12 +302,6 @@ class DefaultFailureManager(FailureManager):
         ):
             new_workflow.output_ports[key] = port.name
 
-        # reset queues in the ConnectorPort of steps to rollback
-        for port in new_workflow.ports.values():
-            if isinstance(port, ConnectorPort):
-                for input_step in port.queues.keys():
-                    if input_step in new_workflow.steps.keys():
-                        port.reset(input_step)
 
 
         # TODO: agganciare le porte di output del workflow con le porte di output dello step che si sta rieseguendo
