@@ -297,6 +297,8 @@ class Port(PersistableEntity):
                     params=json.dumps(await self._save_additional_params(context)),
                 )
 
+    def reset(self, consumer: str):
+        self._init_consumer(consumer)
 
 class Status(Enum):
     WAITING = 0

@@ -4,6 +4,7 @@ import os
 import re
 import asyncio
 import logging
+import itertools
 from typing import MutableMapping, MutableSequence, cast
 
 import pkg_resources
@@ -33,7 +34,7 @@ from streamflow.log_handler import logger
 from streamflow.recovery.recovery import JobVersion
 from streamflow.workflow.executor import StreamFlowExecutor
 from streamflow.workflow.port import ConnectorPort, JobPort
-from streamflow.workflow.step import ExecuteStep
+from streamflow.workflow.step import ExecuteStep, DeployStep
 from streamflow.persistence.loading_context import DefaultDatabaseLoadingContext
 from streamflow.workflow.token import TerminationToken
 from streamflow.workflow.utils import get_token_value, contains_file, get_file
@@ -126,6 +127,12 @@ async def _search_lost_steps(original_workflow, step_failed):
 async def _create_graph(
     original_step: Step, context, loading_context, new_workflow: Workflow
 ):
+    if isinstance(original_step, DeployStep):
+        port = original_step.get_output_port()
+        if port.name not in new_workflow.ports.keys():
+            new_workflow.add_port(port)
+        return []
+
     step_loaded = await loading_context.load_step(context, original_step.persistent_id)
     step_loaded.workflow = new_workflow
     step_loaded.status = Status.WAITING
@@ -144,10 +151,9 @@ async def _create_graph(
         )
         output_ports_loaded[key].workflow = new_workflow
     new_workflow.add_step(step_loaded)
-    for port in input_ports_loaded.values():
-        new_workflow.add_port(port)
-    for port in output_ports_loaded.values():
-        new_workflow.add_port(port)
+    for port in itertools.chain(input_ports_loaded.values(), output_ports_loaded.values()):
+        if port.name not in new_workflow.ports.keys():
+            new_workflow.add_port(port)
     return output_ports_loaded.values()
 
 
@@ -296,6 +302,14 @@ class DefaultFailureManager(FailureManager):
             new_workflow.steps[step_failed.name].get_output_ports().items()
         ):
             new_workflow.output_ports[key] = port.name
+
+        # reset queues in the ConnectorPort of steps to rollback
+        for port in new_workflow.ports.values():
+            if isinstance(port, ConnectorPort):
+                for input_step in port.queues.keys():
+                    if input_step in new_workflow.steps.keys():
+                        port.reset(input_step)
+
 
         # TODO: agganciare le porte di output del workflow con le porte di output dello step che si sta rieseguendo
         print("VIAAAAAAAAAAAAAA")
