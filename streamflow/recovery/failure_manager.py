@@ -108,13 +108,9 @@ async def _search_lost_steps(original_workflow: Workflow, job_failed: Job, step_
             steps_to_rollback[step] = set()
         for job in jobs:
             steps_to_rollback[step].add(job)
-        steps_not_available = []
         for port in step.get_input_ports().values():
             if not isinstance(port, JobPort):
-                missing_steps = await _are_data_available(port, original_workflow.context)
-                if missing_steps:
-                    steps_not_available.extend(missing_steps)
-        steps_to_check.extend(steps_not_available)
+                steps_to_check.extend(await _are_data_available(port, original_workflow.context))
     return steps_to_rollback
 
 
@@ -280,16 +276,15 @@ class DefaultFailureManager(FailureManager):
             self.workflow_running.append(new_workflow)
 
         job_ports = {}
-        tags = set()
+        tokens = set()
         for step, jobs in rollback_steps.items():
             if jobs:
                 job_ports[step.get_input_port("__job__").name] = jobs
-                # TODO: associare i tags ai job.
-                # In questa configurazione in caso di multiple scatter,
-                # i tags si mischierebbero
+
+                # get tokens used
                 for j in jobs:
                     for token in j.inputs.values():
-                        tags.add(token.tag)
+                        tokens.add(token)
         # fix ports queue and tokens
         for port in new_workflow.ports.values():
             # reset queue in the ConnectorPort of steps to rollback
@@ -306,8 +301,8 @@ class DefaultFailureManager(FailureManager):
             # add only necessary tokens taken from original workflow
             elif port not in inner_output_ports:
                 for token in workflow.ports[port.name].token_list:
-                    # TODO: come sopra: token.tag deve essere verificato nei tags dei jobs coinvolti
-                    if token.tag in tags or isinstance(token, TerminationToken):
+                    # if is a necessary token or is a termination token
+                    if token in tokens or isinstance(token, TerminationToken):
                         port.put(token)
 
         # TODO: agganciare le porte di output del workflow con le porte di output dello step che si sta rieseguendo
