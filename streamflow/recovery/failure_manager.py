@@ -5,6 +5,7 @@ import re
 import asyncio
 import logging
 import itertools
+from asyncio import Lock
 from typing import MutableMapping, MutableSequence, cast
 
 import pkg_resources
@@ -36,7 +37,7 @@ from streamflow.workflow.executor import StreamFlowExecutor
 from streamflow.workflow.port import ConnectorPort, JobPort
 from streamflow.workflow.step import ExecuteStep, DeployStep
 from streamflow.persistence.loading_context import DefaultDatabaseLoadingContext
-from streamflow.workflow.token import TerminationToken
+from streamflow.workflow.token import TerminationToken, JobToken
 from streamflow.workflow.utils import get_token_value, contains_file, get_file
 
 # from streamflow.main import build_context
@@ -52,75 +53,82 @@ async def _cleanup_dir(
     )
 
 
-# TODO: trovare il deployment e cercare il file con exists di remotepath
-def tmp_is_local(step_name, filepath):
-    home = "/home/alberto"
-    return filepath[0 : len(home)] == home
 
 
-def contains(elem_to_find, elems_list):
-    for curr_elem in elems_list:
-        if elem_to_find == curr_elem:
-            return True
-    return False
 
+async def _are_data_available(port, files1, context):
+    job_key = '__job__'
 
-def add_steps_by_port(port, steps_list, condition):
+    missing_steps = []
     for step in port.get_input_steps():
-        if condition(step):
-            steps_list.append(step)
+        step_keys = step.input_ports.keys()
+        if job_key in step_keys:
+            job = step.get_input_port(job_key).token_list[0].value
+            allocation = context.scheduler.get_allocation(job.name)
+            connector = context.scheduler.get_connector(job.name)
+            locations = context.scheduler.get_locations(job.name)
+            missing_jobs = []
+            for job_token in step.get_input_port(job_key).token_list:
+                # print("job_token", job_token, "job", job_token.value)
+                if isinstance(job_token, JobToken):
+                    files = [ file for token in job_token.value.inputs.values() for file in get_file(token) ]
+                #    print("job", job_token.value, "files", files)
+
+                    file_available = []
+                    for file in files:
+                        file_available.append(
+                            asyncio.create_task(
+                                remotepath.exists(
+                                    connector, locations[0], file['path']
+                                )
+                            )
+                        )
+                    ttt = await asyncio.gather(*file_available)
+                    if not all(ttt):
+                        missing_jobs.append(job_token.job)
+            if missing_jobs:
+                missing_steps.append((step, missing_jobs))
+        else:
+            missing_steps.append((step, []))
+    return missing_steps
 
 
-async def _search_lost_steps(original_workflow, step_failed):
-    """
-    Recostruct the graph dependencies visiting the input ports of the steps marked as to_visit.
-    If the tokens inside the port are Files,
-        if any files are missing then it necessary rollback other steps, to find them we mark the steps as to_visit;
-        otherwise this specific port input are available but this info is not enough to mark the steps as visited.
-    If the tokens inside the port are not File, the steps with the port in input are marked as suspended.
-    When there are no steps marked as to_visit, we mark the steps suspended as visited.
-    """
-    # steps to check if the inputs are available
-    to_visit = [step_failed]
+async def _search_lost_steps(original_workflow: Workflow, job_failed: Job, step_failed: Step):
+    # ExecuteStep -> __job__ port -> JobPort -> Jobs -> rilancia solo i job con Token persi.
+    # Come ancora non so
+    # Prima idea:
+    # - con _search_lost_steps cerchi gli step
+    # - con _create_graph non solo carichi gli step ma verifichi i job. Così crei
+    # le port (ListPort in questo caso) adatte al fallimento
+    # da _search_lost_steps però mi devo portare dietro l'info dei dati persi altrimenti
+    # devo ricontrollarli dentro _create_graph per individuare i Job
+    steps_to_check = [(step_failed, [job_failed])]
+    steps_to_rollback = {}
+    while steps_to_check:
+        step, jobs = steps_to_check.pop()
+        if step not in steps_to_rollback.keys():
+            steps_to_rollback[step] = set()
 
-    # steps which or inputs are available, or its inputs are generated from other steps within the list
-    visited = []
+        for j in jobs:
+            steps_to_rollback[step].add(j)
+        steps_not_available = []
+        for s_port_name, port in step.get_input_ports().items():
+            if not isinstance(port, JobPort):
+                # files = [
+                #     inner_token
+                #     for outer_token in port.token_list
+                #     for inner_token in get_file(outer_token)
+                # ]
+#                if files:
+                files = None
+                missing_steps = await _are_data_available(port, files, original_workflow.context)
+                if missing_steps:
+                    steps_not_available.extend(missing_steps)
+        steps_to_check.extend(steps_not_available)
+    return steps_to_rollback
 
-    # steps which at least one input is available, but
-    # the current information are not enough to know if all the inputs are available.
-    suspended = []
 
-    condition = lambda x: not contains(x, to_visit) and not contains(x, visited)
-    while len(to_visit) > 0:
-        current_step = to_visit.pop()
-        if current_step in suspended:
-            suspended.remove(current_step)
-        visited.append(current_step)
-        for step_port_name, port in current_step.get_input_ports().items():
-            if isinstance(port, JobPort):
-                add_steps_by_port(port, to_visit, condition)
-            else:
-                # res = any([contains_file(t) for t in port.token_list])
-                files = [
-                    inner_token
-                    for outer_token in port.token_list
-                    for inner_token in get_file(outer_token)
-                ]
-                if files:
-                    # TODO: controllare che il file esiste o meno
-                    # get_token_value(port.token_list) il metodo ritorna una lista o un dizionario o direttamente il value
 
-                    # if any files are missing, the port is invalid and its input steps must be re-executed
-                    if any(
-                        [not tmp_is_local(current_step, file["path"]) for file in files]
-                    ):
-                        add_steps_by_port(port, to_visit, condition)
-                    else:
-                        add_steps_by_port(port, suspended, condition)
-                else:
-                    add_steps_by_port(port, suspended, condition)
-    visited.extend(suspended)
-    return visited
 
 
 async def _create_graph(
@@ -165,11 +173,15 @@ class DefaultFailureManager(FailureManager):
         retry_delay: int | None = None,
     ):
         super().__init__(context)
-        self.jobs: MutableMapping[str, JobVersion] = {}
         self.max_retries: int = max_retries
-        self.replay_cache: MutableMapping[str, ReplayResponse] = {}
         self.retry_delay: int | None = retry_delay
         self.wait_queues: MutableMapping[str, asyncio.Condition] = {}
+
+        self.jobs: MutableMapping[str, JobVersion] = {}
+        self.rollback_lock: Lock = Lock()
+        self.workflow_running = []
+        self.wait_queues: MutableMapping[str, asyncio.Condition] = {}
+
         # TODO: correggere attributi
         # self.workflows    # tutti i workflow che si stanno rieseguendo
         # self.wait         # step che sono falliti ma stanno aspettando che degli step particolari in esecuzione su altri workflow terminino
@@ -263,14 +275,23 @@ class DefaultFailureManager(FailureManager):
         loading_context = DefaultDatabaseLoadingContext()
 
         inner_output_ports = []
-        rollback_steps = await _search_lost_steps(workflow, step_failed)
-        for curr_step in rollback_steps:
-            for output_port in await _create_graph(
-                curr_step, context, loading_context, new_workflow
-            ):
-                if output_port not in inner_output_ports:
-                    inner_output_ports.append(output_port)
+        async with self.rollback_lock:
+            rollback_steps = await _search_lost_steps(workflow, job, step_failed)
+            for curr_step in rollback_steps.keys():
+                for output_port in await _create_graph(
+                    curr_step, context, loading_context, new_workflow
+                ):
+                    if output_port not in inner_output_ports:
+                        inner_output_ports.append(output_port)
+            self.workflow_running.append(new_workflow)
 
+        job_ports = {}
+        tags = set()
+        for step, jobs in rollback_steps.items():
+            job_ports[step.get_input_port("__job__").name] = jobs
+            for j in jobs:
+                for token in j.inputs.values():
+                    tags.add(token.tag)
         # fix ports queue and tokens
         for port in new_workflow.ports.values():
             # reset queue in the ConnectorPort of steps to rollback
@@ -279,22 +300,29 @@ class DefaultFailureManager(FailureManager):
                     if input_step in new_workflow.steps.keys():
                         port.reset(input_step)
 
+            elif isinstance(port, JobPort):
+                for j in job_ports[port.name]:
+                    port.put(JobToken(j))
+
             # if the port is not the output port of any step then its data are available
             # add the tokens taken from original workflow
             elif port not in inner_output_ports:
                 for token in workflow.ports[port.name].token_list:
-                    port.put(token)
+                    if token.tag in tags or isinstance(token, TerminationToken):
+                        port.put(token)
 
         # the output port is the same port of the step failed
-        for key, port in (
-            new_workflow.steps[step_failed.name].get_output_ports().items()
-        ):
-            new_workflow.output_ports[key] = port.name
+        # for key, port in (
+        #     new_workflow.steps[step_failed.name].get_output_ports().items()
+        # ):
+        #     new_workflow.output_ports[key] = port.name
 
         # TODO: agganciare le porte di output del workflow con le porte di output dello step che si sta rieseguendo
         print("VIAAAAAAAAAAAAAA")
         executor = StreamFlowExecutor(new_workflow)
         output_tokens = await executor.run()
+        async with self.rollback_lock:
+            self.workflow_running.remove(new_workflow)
         print("Finito")
         return CWLCommandOutput(value="", status=Status.COMPLETED, exit_code=0)
 
@@ -412,58 +440,6 @@ class DefaultFailureManager(FailureManager):
         if logger.isEnabledFor(logging.INFO):
             logger.info(f"Handling command failure for job {job.name}")
         return await self._do_handle_failure(job, step)
-
-    async def replay_job(self, replay_request: ReplayRequest) -> ReplayResponse:
-        sender_job = replay_request.sender
-        target_job = replay_request.target
-        if target_job not in self.wait_queues:
-            self.wait_queues[target_job] = asyncio.Condition()
-        wait_queue = self.wait_queues[target_job]
-        async with wait_queue:
-            if (
-                target_job not in self.replay_cache
-                or self.replay_cache[target_job].version < replay_request.version
-            ):
-                # Reschedule job
-                if logger.isEnabledFor(logging.INFO):
-                    logger.info(f"Rescheduling job {target_job}")
-                command_output = CommandOutput(value=None, status=Status.FAILED)
-                self.replay_cache[target_job] = ReplayResponse(
-                    job=target_job,
-                    outputs=None,
-                    version=self.jobs[target_job].version + 1,
-                )
-                try:
-                    await self.context.scheduler.notify_status(
-                        sender_job, Status.WAITING
-                    )
-                    command_output = await self._replay_job(self.jobs[target_job])
-                finally:
-                    await self.context.scheduler.notify_status(
-                        target_job, command_output.status
-                    )
-                # Retrieve output
-                output_ports = target_job.step.output_ports
-                output_tasks = []
-                for output_port in output_ports:
-                    output_tasks.append(
-                        asyncio.create_task(
-                            target_job.step.output_token_processors[
-                                output_port
-                            ].compute_token(target_job, command_output)
-                        )
-                    )
-                self.replay_cache[target_job].outputs = {
-                    port.name: token
-                    for (port, token) in zip(
-                        output_ports, await asyncio.gather(*output_tasks)
-                    )
-                }
-                wait_queue.notify_all()
-            elif self.replay_cache[target_job].outputs is None:
-                # Wait for job completion
-                await wait_queue.wait()
-            return self.replay_cache[target_job]
 
 
 class DummyFailureManager(FailureManager):
