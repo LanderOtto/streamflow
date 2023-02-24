@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import posixpath
 import re
 import asyncio
 import logging
@@ -141,11 +142,12 @@ async def _search_lost_steps(original_workflow: Workflow, job_failed: Job, step_
     while steps_to_check:
         step, jobs = steps_to_check.pop()
         if step not in steps_to_rollback.keys():
-            steps_to_rollback[step] = set()
+            steps_to_rollback[step] = []
 
         lost_inputs = []
         for job in jobs:
-            steps_to_rollback[step].add(job)
+            if job not in steps_to_rollback[step]:
+                steps_to_rollback[step].append(job)
             lost_inputs.extend(await _are_data_available(job, original_workflow.context))
         if lost_inputs or isinstance(step, ScheduleStep):
             for lost_steps in [ port.get_input_steps() for port in step.get_input_ports().values() ]:
@@ -294,12 +296,7 @@ class DefaultFailureManager(FailureManager):
             return False
         return True
 
-    async def _recover_data(self, job_version: JobVersion, job: Job):
-        # TODO: liberare le risorse dello step caduto? (così mentre fa il recover altri job possono fare robe)
-        # TODO: sistemare la load_step. Ogni volta carica tutto il workflow ma a noi serve solo lo step
-        # TODO: update del target? se ha più target usare un altro?
-        # TODO: cleanup se la risorsa non è caduta
-        # TODO: invalidare location se la risorsa è caduta
+    async def _recover_data(self, job_version: JobVersion, job_failed: Job):
         workflow = job_version.step.workflow
         step_failed = job_version.step
         context = (
@@ -314,7 +311,7 @@ class DefaultFailureManager(FailureManager):
 
         inner_output_ports = []
         async with self.rollback_lock:
-            rollback_steps = await _search_lost_steps(workflow, job, step_failed)
+            rollback_steps = await _search_lost_steps(workflow, job_failed, step_failed)
             for curr_step in rollback_steps.keys():
                 for output_port in await _populate_workflow(
                     curr_step, context, loading_context, new_workflow
@@ -347,20 +344,20 @@ class DefaultFailureManager(FailureManager):
                     head = step.binding_config.targets.pop(0)
                     step.binding_config.targets.append(head)
 
+                # WARN: set the dirs inside the ScheduleStep only when it has one job.
+                # If it must schedule a ScatterStep it can be dangerous because all the jobs will have the same dir paths
+                # It necessary set the dirs in the job that replace the job failed, in this way the Step in the original workflow will find the output
+                if step.name.startswith(step_failed.name):
+                    step.input_directory = job_failed.input_directory
+                    step.output_directory = job_failed.output_directory
+                    step.tmp_directory = job_failed.tmp_directory
+
                 # save the job port name produced by ScheduleStep
                 output_job_names.append(step.output_ports['__job__'])
 
-        # restore the scheduler
-        # TODO: rimuovere solo i job che saranno ri-schedulati (quindi quelli prodotti da uno ScheduleStep
-        aa_uno = [ job.name for jobs in job_ports.values() for job in jobs ]
-        ab_due = set([j.name for j_list in rollback_steps.values() for j in j_list])
-        ac_tre = [ job.name for output_job_name in output_job_names for job in job_ports[output_job_name] ]
-        for job_name in ac_tre: # set([j.name for j_list in rollback_steps.values() for j in j_list]):
-            for available_locations in context.scheduler.job_allocations[job_name].locations:
-                job_scheduled = context.scheduler.location_allocations[available_locations.deployment][available_locations.name].jobs
-                if job_name in job_scheduled:
-                    job_scheduled.remove(job_name)
-            context.scheduler.job_allocations.pop(job_name)
+        # release the resource (if the job have to be rescheduled)
+        if job_failed.name in [ job.name for output_job_name in output_job_names for job in job_ports[output_job_name] ]:
+            await context.scheduler.notify_status(job_failed.name, Status.WAITING) # TODO: create a new status named RECOVERING?
 
 
         # fix ports queue and tokens
