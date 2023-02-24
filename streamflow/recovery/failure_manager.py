@@ -354,7 +354,7 @@ class DefaultFailureManager(FailureManager):
         # TODO: rimuovere solo i job che saranno ri-schedulati (quindi quelli prodotti da uno ScheduleStep
         aa_uno = [ job.name for jobs in job_ports.values() for job in jobs ]
         ab_due = set([j.name for j_list in rollback_steps.values() for j in j_list])
-        ac_tre = [ job_ports[output_job_name][0].name for output_job_name in output_job_names ]
+        ac_tre = [ job.name for output_job_name in output_job_names for job in job_ports[output_job_name] ]
         for job_name in ac_tre: # set([j.name for j_list in rollback_steps.values() for j in j_list]):
             for available_locations in context.scheduler.job_allocations[job_name].locations:
                 job_scheduled = context.scheduler.location_allocations[available_locations.deployment][available_locations.name].jobs
@@ -383,6 +383,8 @@ class DefaultFailureManager(FailureManager):
                 for token in workflow.ports[port.name].token_list:
                     if token in tokens or isinstance(token, TerminationToken):
                         port.put(token)
+                if not isinstance(port.token_list[-1], TerminationToken):
+                    port.put(TerminationToken())
 
         print("VIAAAAAAAAAAAAAA")
         executor = StreamFlowExecutor(new_workflow)
