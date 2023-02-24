@@ -94,49 +94,17 @@ async def _cleanup_env(job: Job, missing_files, context: StreamFlowContext, conn
     #     context.data_manager.invalidate_location(location, job.input_directory)
     pass
 
-async def _are_data_available3(port: Port, context: StreamFlowContext):
+
+async def _are_data_available(job: Job, context: StreamFlowContext):
     """
     Verify that |port| input data is available.
     It returns a list of tuple with step and relative jobs that generate the missing data.
     If returns an empty list, all the input data are available
     """
-    missing_jobs = []
-    for token in port.token_list:
-        if isinstance(token, JobToken):
-            job = token.value
-            allocation = context.scheduler.get_allocation(job.name)
-            connector = context.scheduler.get_connector(job.name)
-            locations = context.scheduler.get_locations(job.name)
 
-            # get all the necessary files to the job
-            files = [file for token in job.inputs.values() for file in get_file(token)]
-
-            file_available = []
-            for file in files:
-                file_available.append(
-                    asyncio.create_task(
-                        remotepath.exists(
-                            connector, locations[0], file['path']
-                        )
-                    )
-                )
-            # if any files are missing, it necessary to re-run the job
-            missing_files = [file for exists, file in zip(await asyncio.gather(*file_available), files) if not exists]
-            if missing_files:
-                missing_jobs.append(job)
-    return missing_jobs
-
-
-async def _are_data_available3(port: Port, job: Job,context: StreamFlowContext):
-    """
-    Verify that |port| input data is available.
-    It returns a list of tuple with step and relative jobs that generate the missing data.
-    If returns an empty list, all the input data are available
-    """
-    if job is None:
-        return ["something"]
     missing_files = []
-    for token in port.token_list:
+    for key, token in job.inputs.items():
+
         allocation = context.scheduler.get_allocation(job.name)
         connector = context.scheduler.get_connector(job.name)
         locations = context.scheduler.get_locations(job.name)
@@ -155,99 +123,10 @@ async def _are_data_available3(port: Port, job: Job,context: StreamFlowContext):
             )
         # if any files are missing, it necessary to re-run the job
         for exists, file in zip(await asyncio.gather(*file_available), files):
-            if not exists:
-                missing_files.append(file)
+            if not exists and key not in missing_files: # TODO: se funziona, cambiare questo pezzo per renderlo più efficiente
+                missing_files.append(key)
+                context.data_manager.invalidate_location(locations[0], file['path'])
     return missing_files
-
-
-
-
-async def _are_data_available3_1(port: Port, step_to_skip: Step, context: StreamFlowContext):
-    """
-    Verify that |port| input data is available.
-    It returns a list of tuple with step and relative jobs that generate the missing data.
-    If returns an empty list, all the input data are available
-    """
-    if port is None:
-        return []
-    job_key = "__job__"
-    missing_steps = []
-    for step in port.get_input_steps():
-        step_keys = step.input_ports.keys()
-        if job_key in step_keys and step_to_skip != step:
-            missing_jobs = []
-            for job_token in step.get_input_port(job_key).token_list:
-                if isinstance(job_token, JobToken):
-                    job = job_token.value
-                    allocation = context.scheduler.get_allocation(job.name)
-                    connector = context.scheduler.get_connector(job.name)
-                    locations = context.scheduler.get_locations(job.name)
-
-                    # get all the necessary files to the job
-                    files = [ file for token in job.inputs.values() for file in get_file(token) ]
-
-                    file_available = []
-                    for file in files:
-                        file_available.append(
-                            asyncio.create_task(
-                                remotepath.exists(
-                                    connector, locations[0], file['path']
-                                )
-                            )
-                        )
-                    # if any files are missing, it necessary to re-run the job
-                    missing_files = [ file for exists, file in zip(await asyncio.gather(*file_available), files) if not exists]
-                    if missing_files:
-                        missing_jobs.append(job)
-                        await _cleanup_env(job, missing_files, context, connector, locations[0])
-            if missing_jobs:
-                missing_steps.append((step, missing_jobs))
-        else: # steps without Job (e.g. CWLTokenTransformer)
-            missing_steps.append((step, []))
-    return missing_steps
-
-
-async def _are_data_available(port: Port, context: StreamFlowContext):
-    """
-    Verify that |port| input data is available.
-    It returns a list of tuple with step and relative jobs that generate the missing data.
-    If returns an empty list, all the input data are available
-    """
-    job_key = "__job__"
-    missing_steps = []
-    for step in port.get_input_steps():
-        step_keys = step.input_ports.keys()
-        if job_key in step_keys:
-            missing_jobs = []
-            for job_token in step.get_input_port(job_key).token_list:
-                if isinstance(job_token, JobToken):
-                    job = job_token.value
-                    allocation = context.scheduler.get_allocation(job.name)
-                    connector = context.scheduler.get_connector(job.name)
-                    locations = context.scheduler.get_locations(job.name)
-
-                    # get all the necessary files to the job
-                    files = [ file for token in job.inputs.values() for file in get_file(token) ]
-
-                    file_available = []
-                    for file in files:
-                        file_available.append(
-                            asyncio.create_task(
-                                remotepath.exists(
-                                    connector, locations[0], file['path']
-                                )
-                            )
-                        )
-                    # if any files are missing, it necessary to re-run the job
-                    missing_files = [ file for exists, file in zip(await asyncio.gather(*file_available), files) if not exists]
-                    if missing_files:
-                        missing_jobs.append(job)
-                        await _cleanup_env(job, missing_files, context, connector, locations[0])
-            if missing_jobs:
-                missing_steps.append((step, missing_jobs))
-        else: # steps without Job (e.g. CWLTokenTransformer)
-            missing_steps.append((step, []))
-    return missing_steps
 
 
 async def _search_lost_steps(original_workflow: Workflow, job_failed: Job, step_failed: Step):
@@ -255,66 +134,26 @@ async def _search_lost_steps(original_workflow: Workflow, job_failed: Job, step_
     Search all steps to re-run, saving only jobs whose output it has lost.
     It returns a list of tuple with step and relative jobs to re-run.
     """
-    aa_uno = await _wrap1(original_workflow, job_failed, step_failed) # no local ok deploy (resource)
-    aa_due = await _wrap2(original_workflow, job_failed, step_failed) # ok local no docker (tool)
-    aa_tre = await _wrap3(original_workflow, job_failed, step_failed)
-    return aa_tre
-
-async def _wrap1(original_workflow: Workflow, job_failed: Job, step_failed: Step):
     steps_to_check = [(step_failed, [job_failed])]
-    steps_to_rollback = {}
-    s = []
-    while steps_to_check:
-        step, jobs = steps_to_check.pop()
-        if step not in steps_to_rollback.keys():
-            steps_to_rollback[step] = set()
-        for job in jobs:
-            steps_to_rollback[step].add(job)
-
-        for port in step.get_input_ports().values():
-            # if not isinstance(port, JobPort):
-            #     steps_to_check.extend(await _are_data_available(port, original_workflow.context))
-            steps_to_check.extend(await _are_data_available(port, original_workflow.context))
-    return steps_to_rollback
-
-async def _wrap2(original_workflow: Workflow, job_failed: Job, step_failed: Step):
-    steps_to_check = [(step_failed, [job_failed])]
-    steps_to_rollback = {}
-    s = []
-    while steps_to_check:
-        step, jobs = steps_to_check.pop()
-        if step not in steps_to_rollback.keys():
-            steps_to_rollback[step] = set()
-        for job in jobs:
-            steps_to_rollback[step].add(job)
-
-        for port in step.get_input_ports().values():
-            if not isinstance(port, JobPort):
-                steps_to_check.extend(await _are_data_available(port, original_workflow.context))
-            # steps_to_check.extend(await _are_data_available(port, original_workflow.context))
-    return steps_to_rollback
-
-
-async def _wrap3(original_workflow: Workflow, job_failed: Job, step_failed: Step):
-    steps_to_check = [(step_failed, [job_failed])]
+    job_port = cast(JobPort, step_failed.get_input_port("__job__"))
+    # job = await job_port.get_job("/tosort/0")
     steps_to_rollback = {}
     while steps_to_check:
         step, jobs = steps_to_check.pop()
         if step not in steps_to_rollback.keys():
             steps_to_rollback[step] = set()
+
+        lost_inputs = []
         for job in jobs:
             steps_to_rollback[step].add(job)
-
-        inputs = []
-        for port in step.get_input_ports().values():
-            if not isinstance(port, JobPort):
-                job = step.get_input_port("__job__").token_list[0].value if "__job__" in step.input_ports.keys() else None
-                for qualcosa in await _are_data_available3(port, job, original_workflow.context):
-                    if qualcosa not in inputs:
-                        inputs.append(qualcosa)
-        if inputs:
-            res = await _are_data_available3_1(step.get_input_port("__job__"), step, original_workflow.context)
-            steps_to_check.extend(res)
+            lost_inputs.extend(await _are_data_available(job, original_workflow.context))
+        if lost_inputs or isinstance(step, ScheduleStep):
+            for lost_steps in [ port.get_input_steps() for port in step.get_input_ports().values() ]:
+            # for lost_input in lost_inputs:
+            #     lost_steps = step.get_input_port(lost_input).get_input_steps()
+                for lost_step in lost_steps:
+                    prev_jobs = [ job_token.value for job_token in lost_step.get_input_port("__job__").token_list if isinstance(job_token, JobToken) ] if "__job__" in lost_step.input_ports else []
+                    steps_to_check.append((lost_step, prev_jobs))
     return steps_to_rollback
 
 
