@@ -285,12 +285,12 @@ class CombinatorStep(BaseStep):
                         async for schema in cast(
                             AsyncIterable, self.combinator.combine(task_name, token)
                         ):
-                            for port_name, token in schema.items():
+                            for port_name, curr_token in schema.items():
                                 self.get_output_port(port_name).put(
                                     await self._persist_token(
-                                        token=token,
+                                        token=curr_token,
                                         port=self.get_output_port(port_name),
-                                        inputs=schema.values(),
+                                        inputs=[token],  # schema.values(),
                                     )
                                 )
                     # Create a new task in place of the completed one if the port is not terminated
@@ -536,6 +536,14 @@ class ExecuteStep(BaseStep):
             )
         return step
 
+    def _get_job_token(self, job):
+        for token in self.get_input_port("__job__").token_list:
+            if isinstance(token, JobToken) and token.value.name == job.name:
+                return token
+        raise WorkflowDefinitionException(
+            f"Impossible find {job.name} into the port of step {self.name}"
+        )  # is it the correct exception to raise?
+
     async def _retrieve_output(
         self,
         job: Job,
@@ -549,9 +557,13 @@ class ExecuteStep(BaseStep):
                 job, command_output, connector
             )
         ) is not None:
+            # TODO: aggiungere il JobToken anche negli altri step che usano i job e.g. TransferStep (self._persist_token(..., inputs=...))
+            job_token = self._get_job_token(job)
             output_port.put(
                 await self._persist_token(
-                    token=token, port=output_port, inputs=job.inputs.values()
+                    token=token,
+                    port=output_port,
+                    inputs=list(job.inputs.values()) + [job_token],
                 )
             )
 
