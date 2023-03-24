@@ -259,10 +259,13 @@ class Port(PersistableEntity):
         context: StreamFlowContext,
         row: MutableMapping[str, Any],
         loading_context: DatabaseLoadingContext,
+        change_wf: Workflow = None,
     ) -> Port:
         return cls(
             name=row["name"],
-            workflow=await loading_context.load_workflow(context, row["workflow"]),
+            workflow=change_wf
+            if change_wf
+            else await loading_context.load_workflow(context, row["workflow"]),
         )
 
     async def _save_additional_params(
@@ -306,12 +309,14 @@ class Port(PersistableEntity):
         context: StreamFlowContext,
         persistent_id: int,
         loading_context: DatabaseLoadingContext,
+        change_wf: Workflow = None,
     ) -> Port:
         row = await context.database.get_port(persistent_id)
         type = cast(Type[Port], utils.get_class_from_name(row["type"]))
-        port = await type._load(context, row, loading_context)
-        port.persistent_id = persistent_id
-        loading_context.add_port(persistent_id, port)
+        port = await type._load(context, row, loading_context, change_wf)
+        if change_wf is None:
+            port.persistent_id = persistent_id
+            loading_context.add_port(persistent_id, port)
         return port
 
     def put(self, token: Token):
@@ -364,10 +369,13 @@ class Step(PersistableEntity, ABC):
         context: StreamFlowContext,
         row: MutableMapping[str, Any],
         loading_context: DatabaseLoadingContext,
+        change_wf: Workflow = None,
     ):
         return cls(
             name=row["name"],
-            workflow=await loading_context.load_workflow(context, row["workflow"]),
+            workflow=change_wf
+            if change_wf
+            else await loading_context.load_workflow(context, row["workflow"]),
         )
 
     async def _save_additional_params(
@@ -428,17 +436,19 @@ class Step(PersistableEntity, ABC):
         context: StreamFlowContext,
         persistent_id: int,
         loading_context: DatabaseLoadingContext,
+        change_wf: Workflow = None,
     ) -> Step:
         row = await context.database.get_step(persistent_id)
         type = cast(Type[Step], utils.get_class_from_name(row["type"]))
-        step = await type._load(context, row, loading_context)
-        step.persistent_id = persistent_id
-        step.status = Status(row["status"])
-        step.terminated = step.status in [
-            Status.COMPLETED,
-            Status.FAILED,
-            Status.SKIPPED,
-        ]
+        step = await type._load(context, row, loading_context, change_wf)
+        if change_wf is None:
+            step.persistent_id = persistent_id
+            step.status = Status(row["status"])
+            step.terminated = step.status in [
+                Status.COMPLETED,
+                Status.FAILED,
+                Status.SKIPPED,
+            ]
         input_deps = await context.database.get_input_ports(persistent_id)
         input_ports = await asyncio.gather(
             *(
@@ -457,7 +467,8 @@ class Step(PersistableEntity, ABC):
         step.output_ports = {
             d["name"]: p.name for d, p in zip(output_deps, output_ports)
         }
-        loading_context.add_step(persistent_id, step)
+        if change_wf is None:
+            loading_context.add_step(persistent_id, step)
         return step
 
     @abstractmethod
@@ -646,15 +657,21 @@ class Workflow(PersistableEntity):
         if name is None:
             name = str(uuid.uuid4())
         port = cls(workflow=self, name=name, **kwargs)
-        self.ports[name] = port
+        self.add_port(port)
         return port
+
+    def add_port(self, port):
+        self.ports[port.name] = port
 
     def create_step(self, cls: type[S], name: str = None, **kwargs) -> S:
         if name is None:
             name = str(uuid.uuid4())
         step = cls(name=name, workflow=self, **kwargs)
-        self.steps[name] = step
+        self.add_step(step)
         return step
+
+    def add_step(self, step):
+        self.steps[step.name] = step
 
     def get_output_port(self, name: str) -> Port:
         return self.ports[self.output_ports[name]]
