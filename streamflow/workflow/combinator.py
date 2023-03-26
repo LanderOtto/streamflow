@@ -97,11 +97,11 @@ class CartesianProductCombinator(Combinator):
                         schema[key] = config[key]
                         schema[key] = config[key]
                 suffix = [t.tag.split(".")[-1] for t in schema.values()]
-                schema = {
+                new_schema = {
                     k: t.retag(".".join(t.tag.split(".")[:-1] + suffix))
                     for k, t in schema.items()
                 }
-                yield schema
+                yield (schema, new_schema)
 
     async def _save_additional_params(self, context: StreamFlowContext):
         return {
@@ -152,8 +152,8 @@ class DotProductCombinator(Combinator):
                         else:
                             schema[key] = element
                     tag = utils.get_tag(schema.values())
-                    schema = {k: t.retag(tag) for k, t in schema.items()}
-                    yield schema
+                    new_schema = {k: t.retag(tag) for k, t in schema.items()}
+                    yield (schema, new_schema)
 
     async def combine(
         self, port_name: str, token: Token
@@ -191,8 +191,8 @@ class LoopCombinator(DotProductCombinator):
             else:
                 self.iteration_map[prefix] += 1
                 tag = ".".join(tag.split(".")[:-1] + [str(self.iteration_map[prefix])])
-            schema = {k: t.retag(tag) for k, t in schema.items()}
-            yield schema
+            new_schema = {k: t.retag(tag) for k, t in schema.items()}
+            yield (schema, new_schema)
 
 
 class LoopTerminationCombinator(DotProductCombinator):
