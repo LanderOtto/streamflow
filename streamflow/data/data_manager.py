@@ -383,6 +383,13 @@ class RemotePathMapper:
         ):
             loc.data_type = DataType.INVALID
 
+        # for node in node.children.values():
+        #     for data_loc in node.locations.setdefault(location.deployment, {}).get(
+        #         location.name, []
+        #     ):
+        #         self.invalidate_location(data_loc, data_loc.path)
+        pass
+
     def put(
         self, path: str, data_location: DataLocation, recursive: bool = False
     ) -> DataLocation:
