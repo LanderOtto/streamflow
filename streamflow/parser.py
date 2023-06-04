@@ -1,8 +1,65 @@
 import argparse
 import os
+import re
+
+import streamflow.ext.plugin
+
+UNESCAPED_COMMA = re.compile(r"(?<!\\),")
+UNESCAPED_EQUAL = re.compile(r"(?<!\\)=")
+
+
+class _KeyValueAction(argparse.Action):
+    def __call__(self, _parser, namespace, values, option_string=None):
+        items = getattr(namespace, self.dest) or []
+        items.append(
+            {
+                k: v
+                for k, v in (
+                    UNESCAPED_EQUAL.split(val, maxsplit=1)
+                    for val in UNESCAPED_COMMA.split(values)
+                )
+            }
+        )
+        setattr(namespace, self.dest, items)
+
 
 parser = argparse.ArgumentParser(description="StreamFlow Command Line")
 subparsers = parser.add_subparsers(dest="context")
+
+
+# streamflow ext
+ext_parser = subparsers.add_parser(
+    "ext", help="Retrieve information on the available StreamFlow extensions"
+)
+ext_subparsers = ext_parser.add_subparsers(dest="ext_context")
+
+# streamflow ext list
+ext_list_parser = ext_subparsers.add_parser(
+    "list", help="List the available StreamFlow extensions"
+)
+ext_list_parser.add_argument("--name", "-n", type=str, help="Filter extensions by name")
+ext_list_parser.add_argument(
+    "--type",
+    "-t",
+    type=str,
+    choices=streamflow.ext.plugin.extension_points,
+    help="Filter extensions by type",
+)
+
+# streamflow ext show
+ext_show_parser = ext_subparsers.add_parser(
+    "show", help="Show the details of a StreamFlow extension"
+)
+ext_show_parser.add_argument(
+    "type",
+    metavar="TYPE",
+    type=str,
+    choices=streamflow.ext.plugin.extension_points,
+    help="Type of the extension to show",
+)
+ext_show_parser.add_argument(
+    "name", metavar="NAME", type=str, help="Name of the extension to show"
+)
 
 # streamflow list
 list_parser = subparsers.add_parser("list", help="List the executed workflows")
@@ -21,12 +78,50 @@ list_parser.add_argument(
     help="List all executions for the given workflow",
 )
 
+# streamflow plugin
+plugin_parser = subparsers.add_parser(
+    "plugin", help="Retrieve information on the installed StreamFlow plugins"
+)
+plugin_subparsers = plugin_parser.add_subparsers(dest="plugin_context")
+
+# streamflow plugin list
+plugin_list_parser = plugin_subparsers.add_parser(
+    "list", help="List the installed StreamFlow plugins"
+)
+
+# streamflow plugin show
+plugin_show_parser = plugin_subparsers.add_parser(
+    "show", help="Show the details of a StreamFlow plugin"
+)
+plugin_show_parser.add_argument(
+    "plugin", metavar="PLUGIN", type=str, help="Name of the plugin to show"
+)
+
 # streamflow prov
 prov_parser = subparsers.add_parser(
     "prov", help="Generate a provenance archive for an executed workflow"
 )
+prov_parser.register("action", "key_value", _KeyValueAction)
 prov_parser.add_argument(
     "workflow", metavar="WORKFLOW", type=str, help="Name of the workflow to process"
+)
+prov_parser.add_argument(
+    "--add-file",
+    action="key_value",
+    help="Add an external file to the provenance archive. File properties are specified as comma-separated "
+    "key-value pairs (key1=value1,key2=value2). A `src` property (mandatory) specifies where the file is "
+    "located. A `dst` property (default: /) contains a POSIX path specifying where the file should be placed "
+    "in the archive file system (the root folder '/' corresponds to the root of the archive). Additional "
+    'properties can be specified as strings or JSON objects (e.g., about={\\"@id\\":\\"./\\"}) and their meaning '
+    "depends on the selected provenance type.",
+)
+prov_parser.add_argument(
+    "--add-property",
+    action="key_value",
+    help="Add a property to the archive manifest (if present). Properties are specified as comma-separated "
+    "key-value pairs (key1=value1,key2=value2) and can be specified as strings or JSON objects (e.g., "
+    '\\./.license={\\"@id\\":\\"LICENSE\\"}). The way in which property keys map to manifest objects '
+    "depends on the selected provenance type.",
 )
 prov_parser.add_argument(
     "--all",

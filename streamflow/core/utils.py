@@ -16,7 +16,7 @@ from typing import (
     TYPE_CHECKING,
 )
 
-from jsonref import loads
+import jsonref
 
 from streamflow.core.exception import WorkflowExecutionException
 
@@ -139,6 +139,44 @@ def get_date_from_ns(timestamp: int) -> str:
     return (base + delta).replace(tzinfo=datetime.timezone.utc).isoformat()
 
 
+async def get_local_to_remote_destination(
+    dst_connector: Connector, dst_location: Location, src: str, dst: str
+):
+    is_dst_dir, status = await dst_connector.run(
+        location=dst_location,
+        command=[f'test -d "{dst}"'],
+        capture_output=True,
+    )
+    if status > 1:
+        raise WorkflowExecutionException(is_dst_dir)
+    # If destination path exists and is a directory
+    elif status == 0:
+        # Append src basename to dst
+        return posixpath.join(dst, os.path.basename(src))
+    # Otherwise
+    else:
+        # Keep current dst
+        return dst
+
+
+def get_option(
+    name: str,
+    value: Any,
+) -> str:
+    if len(name) > 1:
+        name = f"-{name} "
+    if isinstance(value, bool):
+        return f"-{name} " if value else ""
+    elif isinstance(value, str) or isinstance(value, int):
+        return f'-{name} "{value}" '
+    elif isinstance(value, MutableSequence):
+        return "".join([f'-{name} "{item}" ' for item in value])
+    elif value is None:
+        return ""
+    else:
+        raise TypeError("Unsupported value type")
+
+
 async def get_remote_to_remote_write_command(
     src_connector: Connector,
     src_location: Location,
@@ -147,32 +185,46 @@ async def get_remote_to_remote_write_command(
     dst_locations: MutableSequence[Location],
     dst: str,
 ) -> MutableSequence[str]:
-    if posixpath.basename(src) != posixpath.basename(dst):
-        result, status = await src_connector.run(
-            location=src_location,
-            command=[f'test -d "{src}"'],
-            capture_output=True,
-        )
-        if status > 1:
-            raise WorkflowExecutionException(result)
-        # If is a directory
-        elif status == 0:
-            await asyncio.gather(
-                *(
-                    asyncio.create_task(
-                        dst_connector.run(
-                            location=dst_location, command=["mkdir", "-p", dst]
-                        )
-                    )
-                    for dst_location in dst_locations
-                )
-            )
-            return ["tar", "xf", "-", "-C", dst, "--strip-components", "1"]
-        # If is a file
-        else:
-            return ["tar", "xf", "-", "-O", ">", dst]
+    is_dst_dir, status = await dst_connector.run(
+        location=dst_locations[0],
+        command=[f'test -d "{dst}"'],
+        capture_output=True,
+    )
+    if status > 1:
+        raise WorkflowExecutionException(is_dst_dir)
+    # If destination path exists and is a directory
+    elif status == 0:
+        return ["tar", "xf", "-", "-C", dst]
+    # Otherwise, if destination path does not exist
     else:
-        return ["tar", "xf", "-", "-C", posixpath.dirname(dst)]
+        # If basename must be renamed during trnasfer
+        if posixpath.basename(src) != posixpath.basename(dst):
+            is_src_dir, status = await src_connector.run(
+                location=src_location,
+                command=[f'test -d "{src}"'],
+                capture_output=True,
+            )
+            if status > 1:
+                raise WorkflowExecutionException(is_src_dir)
+            # If source path is a directory
+            elif status == 0:
+                await asyncio.gather(
+                    *(
+                        asyncio.create_task(
+                            dst_connector.run(
+                                location=dst_location, command=["mkdir", "-p", dst]
+                            )
+                        )
+                        for dst_location in dst_locations
+                    )
+                )
+                return ["tar", "xf", "-", "-C", dst, "--strip-components", "1"]
+            # Otherwise, if source path is a file
+            else:
+                return ["tar", "xf", "-", "-O", "|", "tee", dst, ">", "/dev/null"]
+        # Otherwise, if basename must be preserved
+        else:
+            return ["tar", "xf", "-", "-C", posixpath.dirname(dst)]
 
 
 def get_size(path):
@@ -203,16 +255,17 @@ def inject_schema(
     for name, entity in classes.items():
         if entity_schema := entity.get_schema():
             with open(entity_schema) as f:
-                entity_schema = loads(
+                entity_schema = jsonref.loads(
                     f.read(),
                     base_uri=f"file://{os.path.dirname(entity_schema)}/",
                     jsonschema=True,
                 )
-            schema["definitions"][definition_name]["properties"]["type"].setdefault(
-                "enum", []
-            ).append(name)
-            schema["definitions"][definition_name]["definitions"][name] = entity_schema
-            schema["definitions"][definition_name].setdefault("allOf", []).append(
+            definition = schema["definitions"]
+            for el in definition_name.split(posixpath.sep):
+                definition = definition[el]
+            definition["properties"]["type"].setdefault("enum", []).append(name)
+            definition["definitions"][name] = entity_schema
+            definition.setdefault("allOf", []).append(
                 {
                     "if": {"properties": {"type": {"const": name}}},
                     "then": {"properties": {"config": entity_schema}},

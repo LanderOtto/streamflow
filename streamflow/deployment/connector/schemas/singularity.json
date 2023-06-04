@@ -27,6 +27,17 @@
       "uniqueItems": true,
       "description": "A user-bind path specification, in the format src[:dest[:opts]]"
     },
+    "blkioWeight": {
+      "type": "integer",
+      "description": "Block IO relative weight in range 10-1000, 0 to disable"
+    },
+    "blkioWeightDevice": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Device specific block IO relative weight"
+    },
     "boot": {
       "type": "boolean",
       "description": "Execute /sbin/init to boot container (root only)"
@@ -42,6 +53,10 @@
       },
       "description": "Command to run when deploying the container"
     },
+    "compat": {
+      "type": "boolean",
+      "description": "Apply settings for increased OCI/Docker compatibility. Infers --containall, --no-init, --no-umask, --no-eval, --writable-tmpfs."
+    },
     "contain": {
       "type": "boolean",
       "description": "Use minimal /dev and empty other directories (e.g. /tmp and $HOME) instead of sharing filesystems from your host"
@@ -50,6 +65,22 @@
       "type": "boolean",
       "description": "Contain not only file systems, but also PID, IPC, and environment"
     },
+    "cpuShares": {
+      "type": "integer",
+      "description": "CPU shares for container (default -1)"
+    },
+    "cpus": {
+      "type": "string",
+      "description": "Number of CPUs available to container"
+    },
+    "cpusetCpus": {
+      "type": "string",
+      "description": "List of host CPUs available to container"
+    },
+    "cpusetMems": {
+      "type": "string",
+      "description": "List of host memory nodes available to container"
+    },
     "disableCache": {
       "type": "boolean",
       "description": "Don't use cache and don't create cache"
@@ -57,6 +88,10 @@
     "dns": {
       "type": "string",
       "description": "List of DNS server separated by commas to add in resolv.conf"
+    },
+    "dockerHost": {
+      "type": "string",
+      "description": "Specify a custom Docker daemon host"
     },
     "dropCaps": {
       "type": "string",
@@ -103,9 +138,32 @@
       "uniqueItems": true,
       "description": "When referencing an external environment, names of existing instances must be explicitly listed"
     },
+    "ipc": {
+      "type": "boolean",
+      "description": "Run container in a new IPC namespace"
+    },
     "keepPrivs": {
       "type": "boolean",
       "description": "Let root user keep privileges in container (root only)"
+    },
+    "memory": {
+      "type": "string",
+      "description": "Memory limit in bytes"
+    },
+    "memoryReservation": {
+      "type": "string",
+      "description": "Memory soft limit in bytes"
+    },
+    "memorySwap": {
+      "type": "string",
+      "description": "Swap limit, use -1 for unlimited swap"
+    },
+    "mount": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "A mount specification (e.g., type=bind,source=/opt,destination=/hostopt)"
     },
     "net": {
       "type": "boolean",
@@ -124,9 +182,17 @@
       "uniqueItems": true,
       "description": "Specify network arguments to pass to CNI plugins"
     },
+    "noEval": {
+      "type": "boolean",
+      "description": "Do not shell evaluate env vars or OCI container CMD/ENTRYPOINT/ARGS"
+    },
     "noHome": {
       "type": "boolean",
       "description": "Do not mount users home directory if /home is not the current working directory"
+    },
+    "noHttps": {
+      "type": "boolean",
+      "description": "Use HTTP instead of HTTPS for docker:// oras:// and library://<hostname>/... URIs"
     },
     "noInit": {
       "type": "boolean",
@@ -148,13 +214,17 @@
       "type": "boolean",
       "description": "Do not propagate umask to the container. Set default 0022 umask"
     },
-    "nohttps": {
-      "type": "boolean",
-      "description": "Do not use HTTPS with the docker:// transport"
-    },
     "nv": {
       "type": "boolean",
       "description": "Enable experimental NVIDIA support"
+    },
+    "nvccli": {
+      "type": "boolean",
+      "description": "Use nvidia-container-cli for GPU setup"
+    },
+    "oomKillDisable": {
+      "type": "boolean",
+      "description": "Disable OOM killer"
     },
     "overlay": {
       "type": "array",
@@ -171,6 +241,10 @@
     "pidFile": {
       "type": "string",
       "description": "Write instance PID to the file with the given name"
+    },
+    "pidsLimit": {
+      "type": "integer",
+      "description": "Limit number of container PIDs, use -1 for unlimited"
     },
     "replicas": {
       "type": "integer",

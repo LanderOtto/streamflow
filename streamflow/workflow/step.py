@@ -5,6 +5,7 @@ import json
 import logging
 import posixpath
 from abc import ABC, abstractmethod
+from collections import deque
 from types import ModuleType
 from typing import (
     Any,
@@ -41,7 +42,11 @@ from streamflow.deployment.utils import get_path_processor
 from streamflow.log_handler import logger
 from streamflow.workflow.port import ConnectorPort, JobPort
 from streamflow.workflow.token import JobToken, ListToken, TerminationToken
-from streamflow.workflow.utils import check_iteration_termination, check_termination
+from streamflow.workflow.utils import (
+    check_iteration_termination,
+    check_termination,
+    get_job_token,
+)
 
 
 def _get_directory(path_processor: ModuleType, directory: str | None, target: Target):
@@ -73,6 +78,10 @@ def _group_by_tag(
         inputs_map[token.tag][name] = token
 
 
+def _get_token_ids(token_list):
+    return [t.persistent_id for t in (token_list or []) if t.persistent_id]
+
+
 class BaseStep(Step, ABC):
     def __init__(self, name: str, workflow: Workflow):
         super().__init__(name, workflow)
@@ -100,18 +109,16 @@ class BaseStep(Step, ABC):
         return inputs
 
     async def _persist_token(
-        self, token: Token, port: Port, inputs: Iterable[Token]
+        self, token: Token, port: Port, input_token_ids: Iterable[int]
     ) -> Token:
+        if token.persistent_id:
+            raise WorkflowDefinitionException(
+                f"Token already has an id: {token.persistent_id}"
+            )
         await token.save(self.workflow.context, port_id=port.persistent_id)
-        # not list-comprehension: if the token is among its inputs, don't save the dependency
-        tmp = [i for i in inputs]
-        if inputs and not [i for i in inputs if i.persistent_id == token.persistent_id]:
-            # TODO: in inputs i token devono avere un id per la provenance, a meno che non siano i token iniziali del workflow
-            # Correggere situazione injector (inputs non salvati: possibile soluzione non passare gli inputs)
-            # if [i for i in inputs if i.persistent_id is None]:
-            #     raise Exception("Inputs tokens must be saved in persistence")
+        if input_token_ids:
             await self.workflow.context.database.add_provenance(
-                inputs=[i.persistent_id for i in inputs], token=token.persistent_id
+                inputs=input_token_ids, token=token.persistent_id
             )
         return token
 
@@ -147,13 +154,10 @@ class Combinator(ABC):
         context: StreamFlowContext,
         row: MutableMapping[str, Any],
         loading_context: DatabaseLoadingContext,
-        change_wf: Workflow = None,
     ) -> Combinator:
         return cls(
             name=row["name"],
-            workflow=change_wf
-            if change_wf
-            else await loading_context.load_workflow(context, row["workflow"]),
+            workflow=await loading_context.load_workflow(context, row["workflow"]),
         )
 
     async def _save_additional_params(self, context: StreamFlowContext):
@@ -209,12 +213,9 @@ class Combinator(ABC):
         context: StreamFlowContext,
         row: MutableMapping[str, Any],
         loading_context: DatabaseLoadingContext,
-        change_wf: Workflow = None,
     ) -> Combinator:
         type = cast(Combinator, utils.get_class_from_name(row["type"]))
-        combinator = await type._load(
-            context, row["params"], loading_context, change_wf
-        )
+        combinator = await type._load(context, row["params"], loading_context)
         combinator.items = row["params"]["items"]
         combinator.combinators_map = row["params"]["combinators_map"]
         combinator.combinators = {}
@@ -230,6 +231,44 @@ class Combinator(ABC):
             "params": await self._save_additional_params(context),
         }
 
+    def _add_to_list(
+        self,
+        token: Token | MutableMapping[str, Token],
+        port_name: str,
+        depth: int = 0,
+    ):
+        tag = (
+            utils.get_tag([t["token"] for t in token.values()])
+            if isinstance(token, MutableMapping)
+            else token.tag
+        )
+        if depth:
+            tag = ".".join(tag.split(".")[:-depth])
+        for key in list(self.token_values.keys()):
+            if tag == key:
+                continue
+            elif key.startswith(tag):
+                self._add_to_port(token, self.token_values[key], port_name)
+            elif tag.startswith(key):
+                if tag not in self.token_values:
+                    self.token_values[tag] = {}
+                for p in self.token_values[key]:
+                    for t in self.token_values[key][p]:
+                        self._add_to_port(t, self.token_values[tag], p)
+        if tag not in self.token_values:
+            self.token_values[tag] = {}
+        self._add_to_port(token, self.token_values[tag], port_name)
+
+    def _add_to_port(
+        self,
+        token: Token | MutableMapping[str, Token],
+        tag_values: MutableMapping[str, MutableSequence[Any]],
+        port_name: str,
+    ):
+        if port_name not in tag_values:
+            tag_values[port_name] = deque()
+        tag_values[port_name].append(token)
+
 
 class CombinatorStep(BaseStep):
     def __init__(self, name: str, workflow: Workflow, combinator: Combinator):
@@ -242,16 +281,13 @@ class CombinatorStep(BaseStep):
         context: StreamFlowContext,
         row: MutableMapping[str, Any],
         loading_context: DatabaseLoadingContext,
-        change_wf: Workflow = None,
     ) -> CombinatorStep:
         params = json.loads(row["params"])
         return cls(
             name=row["name"],
-            workflow=change_wf
-            if change_wf
-            else await loading_context.load_workflow(context, row["workflow"]),
+            workflow=await loading_context.load_workflow(context, row["workflow"]),
             combinator=await Combinator.load(
-                context, params["combinator"], loading_context, change_wf
+                context, params["combinator"], loading_context
             ),
         )
 
@@ -297,17 +333,20 @@ class CombinatorStep(BaseStep):
                                 f"Step {self.name} received token {token.tag} on port {task_name}"
                             )
                         status = Status.COMPLETED
-                        async for schema, new_schema in cast(
-                            AsyncIterable, self.combinator.combine(task_name, token)
+                        async for schema in cast(
+                            AsyncIterable,
+                            self.combinator.combine(task_name, token),
                         ):
-                            for port_name, curr_token in new_schema.items():
+                            ins = [id for t in schema.values() for id in t["input_ids"]]
+                            for port_name, token in schema.items():
                                 self.get_output_port(port_name).put(
                                     await self._persist_token(
-                                        token=curr_token,
+                                        token=token["token"],
                                         port=self.get_output_port(port_name),
-                                        inputs=schema.values(),
+                                        input_token_ids=ins,
                                     )
                                 )
+
                     # Create a new task in place of the completed one if the port is not terminated
                     if task_name not in terminated:
                         input_tasks.append(
@@ -410,14 +449,11 @@ class DeployStep(BaseStep):
         context: StreamFlowContext,
         row: MutableMapping[str, Any],
         loading_context: DatabaseLoadingContext,
-        change_wf: Workflow = None,
     ) -> DeployStep:
         params = json.loads(row["params"])
         return cls(
             name=row["name"],
-            workflow=change_wf
-            if change_wf
-            else await loading_context.load_workflow(context, row["workflow"]),
+            workflow=await loading_context.load_workflow(context, row["workflow"]),
             deployment_config=await loading_context.load_deployment(
                 context, params["deployment_config"]
             ),
@@ -478,10 +514,10 @@ class DeployStep(BaseStep):
                             )
                             # Propagate the connector in the output port
                             self.get_output_port().put(
-                                await self._persist_token(
+                                await self.persist_token(
                                     token=Token(value=self.deployment_config.name),
                                     port=self.get_output_port(),
-                                    inputs=inputs.values(),
+                                    inputs=_get_token_ids(inputs.values()),
                                 )
                             )
             else:
@@ -494,7 +530,7 @@ class DeployStep(BaseStep):
                     await self._persist_token(
                         token=Token(value=self.deployment_config.name),
                         port=self.get_output_port(),
-                        inputs=[],
+                        input_token_ids=[],
                     )
                 )
             await self.terminate(Status.COMPLETED)
@@ -524,14 +560,11 @@ class ExecuteStep(BaseStep):
         context: StreamFlowContext,
         row: MutableMapping[str, Any],
         loading_context: DatabaseLoadingContext,
-        change_wf: Workflow = None,
     ) -> ExecuteStep:
         params = json.loads(row["params"])
         step = cls(
             name=row["name"],
-            workflow=change_wf
-            if change_wf
-            else await loading_context.load_workflow(context, row["workflow"]),
+            workflow=await loading_context.load_workflow(context, row["workflow"]),
             job_port=cast(
                 JobPort, await loading_context.load_port(context, params["job_port"])
             ),
@@ -557,18 +590,9 @@ class ExecuteStep(BaseStep):
             )
         return step
 
-    # todo: duplicato in transferStep e in failure_manager
-    def get_job_token(self, job):
-        for token in self.get_input_port("__job__").token_list:
-            if isinstance(token, JobToken) and token.value.name == job.name:
-                return token
-        raise WorkflowDefinitionException(
-            f"Impossible find {job.name} into the port of step {self.name}"
-        )  # is it the correct exception to raise?
-
     async def _retrieve_output(
         self,
-        job_token: JobToken,
+        job: Job,
         output_name: str,
         output_port: Port,
         command_output: CommandOutput,
@@ -576,20 +600,22 @@ class ExecuteStep(BaseStep):
     ) -> None:
         if (
             token := await self.output_processors[output_name].process(
-                job_token.value, command_output, connector
+                job, command_output, connector
             )
         ) is not None:
-            # TODO: aggiungere il JobToken anche negli altri step che usano i job e.g. TransferStep (self._persist_token(..., inputs=...))
-            # job_token = self.get_job_token(job)
             output_port.put(
                 await self._persist_token(
                     token=token,
                     port=output_port,
-                    inputs=list(job_token.value.inputs.values()) + [job_token],
+                    input_token_ids=_get_token_ids(
+                        list(job.inputs.values())
+                        + [
+                            get_job_token(
+                                job.name, self.get_input_port("__job__").token_list
+                            )
+                        ]
+                    ),
                 )
-            )
-            await self.workflow.context.failure_manager.notify_jobs(
-                job_token.value.name, token
             )
 
     async def _run_job(
@@ -663,24 +689,11 @@ class ExecuteStep(BaseStep):
         # Retrieve output tokens
         if not self.terminated:
             try:
-                # job_token in the port has the job with old inputs, so for the persistence it is necessary update with the new job
-                original_job_token = self.get_job_token(job)
-
-                # todo: controllare che updated_job_token sia ancora necessario, invece di utilizzare direttamente original_job_token
-                updated_job_token = original_job_token.retag(original_job_token.tag)
-                updated_job_token.persistent_id = original_job_token.persistent_id
-                updated_job_token.value = job
-
-                job_token = (
-                    await self.workflow.context.failure_manager.get_valid_job_token(
-                        updated_job_token
-                    )
-                )
                 await asyncio.gather(
                     *(
                         asyncio.create_task(
                             self._retrieve_output(
-                                job_token=job_token,
+                                job=job,
                                 output_name=output_name,
                                 output_port=self.workflow.ports[output_port],
                                 command_output=command_output,
@@ -823,14 +836,11 @@ class GatherStep(BaseStep):
         context: StreamFlowContext,
         row: MutableMapping[str, Any],
         loading_context: DatabaseLoadingContext,
-        change_wf: Workflow = None,
     ) -> GatherStep:
         params = json.loads(row["params"])
         return cls(
             name=row["name"],
-            workflow=change_wf
-            if change_wf
-            else await loading_context.load_workflow(context, row["workflow"]),
+            workflow=await loading_context.load_workflow(context, row["workflow"]),
             depth=params["depth"],
         )
 
@@ -883,7 +893,7 @@ class GatherStep(BaseStep):
                                 tag=tag, value=sorted(tokens, key=lambda cur: cur.tag)
                             ),
                             port=output_port,
-                            inputs=tokens,
+                            input_token_ids=_get_token_ids(tokens),
                         )
                     )
                 break
@@ -911,14 +921,11 @@ class InputInjectorStep(BaseStep, ABC):
         context: StreamFlowContext,
         row: MutableMapping[str, Any],
         loading_context: DatabaseLoadingContext,
-        change_wf: Workflow = None,
     ) -> InputInjectorStep:
         params = json.loads(row["params"])
         return cls(
             name=row["name"],
-            workflow=change_wf
-            if change_wf
-            else await loading_context.load_workflow(context, row["workflow"]),
+            workflow=await loading_context.load_workflow(context, row["workflow"]),
             job_port=cast(
                 JobPort, await loading_context.load_port(context, params["job_port"])
             ),
@@ -971,12 +978,20 @@ class InputInjectorStep(BaseStep, ABC):
                     await self.workflow.context.scheduler.notify_status(
                         job.name, Status.RUNNING
                     )
+                    in_list = [
+                        get_job_token(
+                            job.name, self.get_input_port("__job__").token_list
+                        )
+                    ]
+                    # if token.persistent is none it means it comes from the dataset
+                    if token.persistent_id:
+                        in_list.append(token)
                     # Process value and inject token in the output port
                     self.get_output_port().put(
                         await self._persist_token(
                             token=await self.process_input(job, token.value),
                             port=self.get_output_port(),
-                            inputs=[token],
+                            input_token_ids=_get_token_ids(in_list),
                         )
                     )
                 finally:
@@ -1049,15 +1064,18 @@ class LoopCombinatorStep(CombinatorStep):
                             self.iteration_terminaton_checklist[task_name].add(
                                 token.tag
                             )
+
                         async for schema in cast(
-                            AsyncIterable, self.combinator.combine(task_name, token)
+                            AsyncIterable,
+                            self.combinator.combine(task_name, token),
                         ):
+                            ins = [id for t in schema.values() for id in t["input_ids"]]
                             for port_name, token in schema.items():
                                 self.get_output_port(port_name).put(
                                     await self._persist_token(
-                                        token=token,
+                                        token=token["token"],
                                         port=self.get_output_port(port_name),
-                                        inputs=schema.values(),
+                                        input_token_ids=ins,
                                     )
                                 )
                     # Create a new task in place of the completed one if the port is not terminated
@@ -1126,7 +1144,7 @@ class LoopOutputStep(BaseStep, ABC):
                 # If no iterations have been performed, just terminate
                 if not self.token_map:
                     break
-                # Otherwise, build termination map to wait for all iteration temrinations
+                # Otherwise, build termination map to wait for all iteration terminations
                 else:
                     self.termination_map = {
                         k: len(self.token_map[k]) == self.size_map.get(k, -1)
@@ -1151,7 +1169,7 @@ class LoopOutputStep(BaseStep, ABC):
                     await self._persist_token(
                         token=await self._process_output(prefix),
                         port=self.get_output_port(),
-                        inputs=self.token_map.get(prefix),
+                        input_token_ids=_get_token_ids(self.token_map.get(prefix)),
                     )
                 )
             # If all iterations are terminated, terminate the step
@@ -1194,7 +1212,6 @@ class ScheduleStep(BaseStep):
         context: StreamFlowContext,
         row: MutableMapping[str, Any],
         loading_context: DatabaseLoadingContext,
-        change_wf: Workflow = None,
     ) -> ScheduleStep:
         params = json.loads(row["params"])
         if hardware_requirement := params.get("hardware_requirement"):
@@ -1203,9 +1220,7 @@ class ScheduleStep(BaseStep):
             )
         return cls(
             name=row["name"],
-            workflow=change_wf
-            if change_wf
-            else await loading_context.load_workflow(context, row["workflow"]),
+            workflow=await loading_context.load_workflow(context, row["workflow"]),
             binding_config=await BindingConfig.load(
                 context, params["binding_config"], loading_context
             ),
@@ -1258,10 +1273,10 @@ class ScheduleStep(BaseStep):
                 )
         # Propagate job
         token_inputs = []
-        for step_port_name, port_name in self.input_ports.items():
+        for step_port_name in self.input_ports.keys():
             if step_port_name in job.inputs.keys():
                 token_inputs.append(job.inputs[step_port_name])
-            else:
+            else:  # other tokens from connector ports
                 for t in self.get_input_port(step_port_name).token_list:
                     if t.persistent_id:
                         token_inputs.append(t)
@@ -1269,7 +1284,7 @@ class ScheduleStep(BaseStep):
             await self._persist_token(
                 token=JobToken(value=job),
                 port=self.get_output_port(),
-                inputs=token_inputs,
+                input_token_ids=_get_token_ids(token_inputs),
             )
         )
 
@@ -1409,21 +1424,13 @@ class ScatterStep(BaseStep):
         elif isinstance(token, ListToken):
             output_port = self.get_output_port()
             for i, t in enumerate(token.value):
-                tag = token.tag + "." + str(i)
-                if self.workflow.context.failure_manager.is_valid_tag(
-                    self.workflow.name, tag, output_port
-                ):
-                    output_port.put(
-                        await self._persist_token(
-                            token=t.retag(tag),
-                            port=output_port,
-                            inputs=[token],
-                        )
+                output_port.put(
+                    await self._persist_token(
+                        token=t.retag(token.tag + "." + str(i)),
+                        port=output_port,
+                        input_token_ids=_get_token_ids([token]),
                     )
-                else:
-                    logger.debug(
-                        f"Step {self.name} skipped token retag {token.tag + '.' + str(i)}"
-                    )
+                )
         else:
             raise WorkflowDefinitionException("Scatter ports require iterable inputs")
 
@@ -1479,14 +1486,11 @@ class TransferStep(BaseStep, ABC):
         context: StreamFlowContext,
         row: MutableMapping[str, Any],
         loading_context: DatabaseLoadingContext,
-        change_wf: Workflow = None,
     ) -> TransferStep:
         params = json.loads(row["params"])
         return cls(
             name=row["name"],
-            workflow=change_wf
-            if change_wf
-            else await loading_context.load_workflow(context, row["workflow"]),
+            workflow=await loading_context.load_workflow(context, row["workflow"]),
             job_port=cast(
                 JobPort, await loading_context.load_port(context, params["job_port"])
             ),
@@ -1499,15 +1503,6 @@ class TransferStep(BaseStep, ABC):
             **await super()._save_additional_params(context),
             **{"job_port": self.get_input_port("__job__").persistent_id},
         }
-
-    # todo: duplicato in ExecuteStep. da fixare e in failure_manager
-    def get_job_token(self, job):
-        for token in self.get_input_port("__job__").token_list:
-            if isinstance(token, JobToken) and token.value.name == job.name:
-                return token
-        raise WorkflowDefinitionException(
-            f"Impossible find {job.name} into the port of step {self.name}"
-        )  # is it the correct exception to raise?
 
     async def run(self):
         # Set default status as SKIPPED
@@ -1543,8 +1538,17 @@ class TransferStep(BaseStep, ABC):
                                     await self._persist_token(
                                         token=await self.transfer(job, token),
                                         port=self.get_output_port(port_name),
-                                        inputs=list(inputs.values())
-                                        + [self.get_job_token(job)],
+                                        input_token_ids=_get_token_ids(
+                                            list(inputs.values())
+                                            + [
+                                                get_job_token(
+                                                    job.name,
+                                                    self.get_input_port(
+                                                        "__job__"
+                                                    ).token_list,
+                                                )
+                                            ]
+                                        ),
                                     )
                                 )
             # When receiving a KeyboardInterrupt, propagate it (to allow debugging)
@@ -1589,9 +1593,11 @@ class Transformer(BaseStep, ABC):
                                 for port_name, token in inputs.items():
                                     self.get_output_port(port_name).put(
                                         await self._persist_token(
-                                            token=token,
+                                            token=token.update(token.value),
                                             port=self.get_output_port(port_name),
-                                            inputs=inputs.values(),
+                                            input_token_ids=_get_token_ids(
+                                                inputs.values()
+                                            ),
                                         )
                                     )
                             # Otherwise, apply transformation and propagate outputs
@@ -1599,23 +1605,22 @@ class Transformer(BaseStep, ABC):
                                 for port_name, token in (
                                     await self.transform(inputs)
                                 ).items():
-                                    # TODO: correggere direttamente nel trasform (generare token nuovi oltre il CWLTokenFile)
-                                    if token.persistent_id:
-                                        token_clone = token.retag(tag=token.tag)
-                                    else:
-                                        token_clone = token
                                     self.get_output_port(port_name).put(
                                         await self._persist_token(
-                                            token=token_clone,
+                                            token=token,
                                             port=self.get_output_port(port_name),
-                                            inputs=inputs.values(),
+                                            input_token_ids=_get_token_ids(
+                                                inputs.values()
+                                            ),
                                         )
                                     )
             else:
                 for port_name, token in (await self.transform({})).items():
                     self.get_output_port(port_name).put(
                         await self._persist_token(
-                            token=token, port=self.get_output_port(port_name), inputs=[]
+                            token=token,
+                            port=self.get_output_port(port_name),
+                            input_token_ids=[],
                         )
                     )
             # Terminate step

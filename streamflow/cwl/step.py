@@ -28,6 +28,7 @@ from streamflow.workflow.step import (
     InputInjectorStep,
     LoopOutputStep,
     TransferStep,
+    _get_token_ids,
 )
 from streamflow.workflow.token import IterationTerminationToken, ListToken, ObjectToken
 
@@ -99,12 +100,24 @@ class CWLConditionalStep(CWLBaseConditionalStep):
     async def _on_true(self, inputs: MutableMapping[str, Token]):
         # Propagate output tokens
         for port_name, port in self.get_output_ports().items():
-            port.put(inputs[port_name])
+            port.put(
+                await self._persist_token(
+                    token=inputs[port_name].update(inputs[port_name].value),
+                    port=port,
+                    input_token_ids=_get_token_ids(inputs.values()),
+                )
+            )
 
     async def _on_false(self, inputs: MutableMapping[str, Token]):
         # Propagate skip tokens
         for port in self.get_skip_ports().values():
-            port.put(Token(value=None, tag=get_tag(inputs.values())))
+            port.put(
+                await self._persist_token(
+                    token=Token(value=None, tag=get_tag(inputs.values())),
+                    port=port,
+                    input_token_ids=_get_token_ids(inputs.values()),
+                )
+            )
 
     async def _save_additional_params(
         self, context: StreamFlowContext
@@ -124,14 +137,11 @@ class CWLConditionalStep(CWLBaseConditionalStep):
         context: StreamFlowContext,
         row: MutableMapping[str, Any],
         loading_context: DatabaseLoadingContext,
-        change_wf: Workflow = None,
     ) -> CWLConditionalStep:
         params = json.loads(row["params"])
         return cls(
             name=row["name"],
-            workflow=change_wf
-            if change_wf
-            else await loading_context.load_workflow(context, row["workflow"]),
+            workflow=await loading_context.load_workflow(context, row["workflow"]),
             expression=params["expression"],
             expression_lib=params["expression_lib"],
             full_js=params["full_js"],
@@ -191,26 +201,22 @@ class CWLEmptyScatterConditionalStep(CWLBaseConditionalStep):
         context: StreamFlowContext,
         row: MutableMapping[str, Any],
         loading_context: DatabaseLoadingContext,
-        change_wf: Workflow = None,
     ):
         params = json.loads(row["params"])
         return cls(
             name=row["name"],
-            workflow=change_wf
-            if change_wf
-            else await loading_context.load_workflow(context, row["workflow"]),
+            workflow=await loading_context.load_workflow(context, row["workflow"]),
             scatter_method=params["scatter_method"],
         )
 
     async def _on_true(self, inputs: MutableMapping[str, Token]):
         # Propagate output tokens
         for port_name, port in self.get_output_ports().items():
-            token_clone = inputs[port_name].retag(inputs[port_name].tag)
             port.put(
                 await self._persist_token(
-                    token=token_clone,
+                    token=inputs[port_name].update(inputs[port_name].value),
                     port=port,
-                    inputs=inputs.values(),
+                    input_token_ids=_get_token_ids(inputs.values()),
                 )
             )
 
@@ -224,12 +230,11 @@ class CWLEmptyScatterConditionalStep(CWLBaseConditionalStep):
             token_value = []
         # Propagate skip tokens
         for port in self.get_skip_ports().values():
-            token = ListToken(value=token_value, tag=get_tag(inputs.values()))
             port.put(
                 await self._persist_token(
-                    token=token,
+                    token=ListToken(value=token_value, tag=get_tag(inputs.values())),
                     port=port,
-                    inputs=inputs.values(),
+                    input_token_ids=_get_token_ids(inputs.values()),
                 )
             )
 
