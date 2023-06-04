@@ -23,6 +23,7 @@ from streamflow.core.deployment import Connector, DeploymentConfig, Location, Ta
 from streamflow.core.exception import (
     FailureHandlingException,
     WorkflowDefinitionException,
+    WorkflowTransferException,
 )
 from streamflow.core.persistence import DatabaseLoadingContext
 from streamflow.core.scheduling import HardwareRequirement
@@ -154,10 +155,13 @@ class Combinator(ABC):
         context: StreamFlowContext,
         row: MutableMapping[str, Any],
         loading_context: DatabaseLoadingContext,
+        change_wf: Workflow = None,
     ) -> Combinator:
         return cls(
             name=row["name"],
-            workflow=await loading_context.load_workflow(context, row["workflow"]),
+            workflow=change_wf
+            if change_wf
+            else await loading_context.load_workflow(context, row["workflow"]),
         )
 
     async def _save_additional_params(self, context: StreamFlowContext):
@@ -213,9 +217,12 @@ class Combinator(ABC):
         context: StreamFlowContext,
         row: MutableMapping[str, Any],
         loading_context: DatabaseLoadingContext,
+        change_wf: Workflow = None,
     ) -> Combinator:
         type = cast(Combinator, utils.get_class_from_name(row["type"]))
-        combinator = await type._load(context, row["params"], loading_context)
+        combinator = await type._load(
+            context, row["params"], loading_context, change_wf
+        )
         combinator.items = row["params"]["items"]
         combinator.combinators_map = row["params"]["combinators_map"]
         combinator.combinators = {}
@@ -281,13 +288,16 @@ class CombinatorStep(BaseStep):
         context: StreamFlowContext,
         row: MutableMapping[str, Any],
         loading_context: DatabaseLoadingContext,
+        change_wf: Workflow = None,
     ) -> CombinatorStep:
         params = json.loads(row["params"])
         return cls(
             name=row["name"],
-            workflow=await loading_context.load_workflow(context, row["workflow"]),
+            workflow=change_wf
+            if change_wf
+            else await loading_context.load_workflow(context, row["workflow"]),
             combinator=await Combinator.load(
-                context, params["combinator"], loading_context
+                context, params["combinator"], loading_context, change_wf
             ),
         )
 
@@ -449,11 +459,14 @@ class DeployStep(BaseStep):
         context: StreamFlowContext,
         row: MutableMapping[str, Any],
         loading_context: DatabaseLoadingContext,
+        change_wf: Workflow = None,
     ) -> DeployStep:
         params = json.loads(row["params"])
         return cls(
             name=row["name"],
-            workflow=await loading_context.load_workflow(context, row["workflow"]),
+            workflow=change_wf
+            if change_wf
+            else await loading_context.load_workflow(context, row["workflow"]),
             deployment_config=await loading_context.load_deployment(
                 context, params["deployment_config"]
             ),
@@ -517,7 +530,7 @@ class DeployStep(BaseStep):
                                 await self.persist_token(
                                     token=Token(value=self.deployment_config.name),
                                     port=self.get_output_port(),
-                                    inputs=_get_token_ids(inputs.values()),
+                                    input_token_ids=_get_token_ids(inputs.values()),
                                 )
                             )
             else:
@@ -560,11 +573,14 @@ class ExecuteStep(BaseStep):
         context: StreamFlowContext,
         row: MutableMapping[str, Any],
         loading_context: DatabaseLoadingContext,
+        change_wf: Workflow = None,
     ) -> ExecuteStep:
         params = json.loads(row["params"])
         step = cls(
             name=row["name"],
-            workflow=await loading_context.load_workflow(context, row["workflow"]),
+            workflow=change_wf
+            if change_wf
+            else await loading_context.load_workflow(context, row["workflow"]),
             job_port=cast(
                 JobPort, await loading_context.load_port(context, params["job_port"])
             ),
@@ -689,11 +705,21 @@ class ExecuteStep(BaseStep):
         # Retrieve output tokens
         if not self.terminated:
             try:
+                job_token_original = get_job_token(
+                    job.name, self.get_input_port("__job__").token_list
+                )
+                job_token_updated = job_token_original.update(job)
+                job_token_updated.persistent_id = job_token_original.persistent_id
+                job_token = (
+                    await self.workflow.context.failure_manager.get_valid_job_token(
+                        job_token_updated
+                    )
+                )
                 await asyncio.gather(
                     *(
                         asyncio.create_task(
                             self._retrieve_output(
-                                job=job,
+                                job=job_token.value,
                                 output_name=output_name,
                                 output_port=self.workflow.ports[output_port],
                                 command_output=command_output,
@@ -836,11 +862,14 @@ class GatherStep(BaseStep):
         context: StreamFlowContext,
         row: MutableMapping[str, Any],
         loading_context: DatabaseLoadingContext,
+        change_wf: Workflow = None,
     ) -> GatherStep:
         params = json.loads(row["params"])
         return cls(
             name=row["name"],
-            workflow=await loading_context.load_workflow(context, row["workflow"]),
+            workflow=change_wf
+            if change_wf
+            else await loading_context.load_workflow(context, row["workflow"]),
             depth=params["depth"],
         )
 
@@ -921,11 +950,14 @@ class InputInjectorStep(BaseStep, ABC):
         context: StreamFlowContext,
         row: MutableMapping[str, Any],
         loading_context: DatabaseLoadingContext,
+        change_wf: Workflow = None,
     ) -> InputInjectorStep:
         params = json.loads(row["params"])
         return cls(
             name=row["name"],
-            workflow=await loading_context.load_workflow(context, row["workflow"]),
+            workflow=change_wf
+            if change_wf
+            else await loading_context.load_workflow(context, row["workflow"]),
             job_port=cast(
                 JobPort, await loading_context.load_port(context, params["job_port"])
             ),
@@ -1212,6 +1244,7 @@ class ScheduleStep(BaseStep):
         context: StreamFlowContext,
         row: MutableMapping[str, Any],
         loading_context: DatabaseLoadingContext,
+        change_wf: Workflow = None,
     ) -> ScheduleStep:
         params = json.loads(row["params"])
         if hardware_requirement := params.get("hardware_requirement"):
@@ -1220,7 +1253,9 @@ class ScheduleStep(BaseStep):
             )
         return cls(
             name=row["name"],
-            workflow=await loading_context.load_workflow(context, row["workflow"]),
+            workflow=change_wf
+            if change_wf
+            else await loading_context.load_workflow(context, row["workflow"]),
             binding_config=await BindingConfig.load(
                 context, params["binding_config"], loading_context
             ),
@@ -1424,13 +1459,21 @@ class ScatterStep(BaseStep):
         elif isinstance(token, ListToken):
             output_port = self.get_output_port()
             for i, t in enumerate(token.value):
-                output_port.put(
-                    await self._persist_token(
-                        token=t.retag(token.tag + "." + str(i)),
-                        port=output_port,
-                        input_token_ids=_get_token_ids([token]),
+                tag = token.tag + "." + str(i)
+                if self.workflow.context.failure_manager.is_valid_tag(
+                    self.workflow.name, tag, output_port
+                ):
+                    output_port.put(
+                        await self._persist_token(
+                            token=t.retag(tag),
+                            port=output_port,
+                            input_token_ids=_get_token_ids([token]),
+                        )
                     )
-                )
+                else:
+                    logger.debug(
+                        f"Step {self.name} skipped token retag {token.tag + '.' + str(i)}"
+                    )
         else:
             raise WorkflowDefinitionException("Scatter ports require iterable inputs")
 
@@ -1486,11 +1529,14 @@ class TransferStep(BaseStep, ABC):
         context: StreamFlowContext,
         row: MutableMapping[str, Any],
         loading_context: DatabaseLoadingContext,
+        change_wf: Workflow = None,
     ) -> TransferStep:
         params = json.loads(row["params"])
         return cls(
             name=row["name"],
-            workflow=await loading_context.load_workflow(context, row["workflow"]),
+            workflow=change_wf
+            if change_wf
+            else await loading_context.load_workflow(context, row["workflow"]),
             job_port=cast(
                 JobPort, await loading_context.load_port(context, params["job_port"])
             ),
@@ -1557,6 +1603,17 @@ class TransferStep(BaseStep, ABC):
             # When receiving a CancelledError, mark the step as Cancelled
             except asyncio.CancelledError:
                 await self.terminate(Status.CANCELLED)
+            except WorkflowTransferException as e:
+                logger.exception(e)
+                try:
+                    status = await self.workflow.context.failure_manager.handle_failure_transfer(
+                        job, self
+                    )
+                # If failure cannot be recovered, simply fail
+                except Exception as ie:
+                    if ie != e:
+                        logger.exception(ie)
+                    await self.terminate(Status.FAILED)
             except Exception as e:
                 logger.exception(e)
                 await self.terminate(Status.FAILED)

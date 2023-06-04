@@ -79,3 +79,6 @@ class CWLFileToken(FileToken):
             return await self.value.is_available(context)
         else:
             return await _is_file_token_available(context, self.value)
+
+    def __str__(self):
+        return self.value["path"]

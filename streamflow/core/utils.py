@@ -19,6 +19,7 @@ from typing import (
 import jsonref
 
 from streamflow.core.exception import WorkflowExecutionException
+from streamflow import myconfig
 
 if TYPE_CHECKING:
     from streamflow.core.context import SchemaEntity
@@ -274,7 +275,10 @@ def inject_schema(
 
 
 def random_name() -> str:
-    return str(uuid.uuid4())
+    a = str(myconfig.COUNTER) + "-" + str(uuid.uuid4())
+    myconfig.COUNTER += 1
+    return a
+    # return str(uuid.uuid4())
 
 
 def wrap_command(command: str):

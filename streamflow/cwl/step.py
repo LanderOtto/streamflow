@@ -12,6 +12,7 @@ from streamflow.core.data import DataType
 from streamflow.core.exception import (
     WorkflowDefinitionException,
     WorkflowExecutionException,
+    WorkflowTransferException,
 )
 from streamflow.core.persistence import DatabaseLoadingContext
 from streamflow.core.utils import get_tag, random_name
@@ -137,11 +138,14 @@ class CWLConditionalStep(CWLBaseConditionalStep):
         context: StreamFlowContext,
         row: MutableMapping[str, Any],
         loading_context: DatabaseLoadingContext,
+        change_wf: Workflow = None,
     ) -> CWLConditionalStep:
         params = json.loads(row["params"])
         return cls(
             name=row["name"],
-            workflow=await loading_context.load_workflow(context, row["workflow"]),
+            workflow=change_wf
+            if change_wf
+            else await loading_context.load_workflow(context, row["workflow"]),
             expression=params["expression"],
             expression_lib=params["expression_lib"],
             full_js=params["full_js"],
@@ -201,11 +205,14 @@ class CWLEmptyScatterConditionalStep(CWLBaseConditionalStep):
         context: StreamFlowContext,
         row: MutableMapping[str, Any],
         loading_context: DatabaseLoadingContext,
+        change_wf: Workflow = None,
     ):
         params = json.loads(row["params"])
         return cls(
             name=row["name"],
-            workflow=await loading_context.load_workflow(context, row["workflow"]),
+            workflow=change_wf
+            if change_wf
+            else await loading_context.load_workflow(context, row["workflow"]),
             scatter_method=params["scatter_method"],
         )
 
@@ -480,7 +487,7 @@ class CWLTransferStep(TransferStep):
                             )
                         )
                         if checksum != original_checksum:
-                            raise WorkflowExecutionException(
+                            raise WorkflowExecutionException(  # todo: workflowTransferException?
                                 "Error transferring file {} in location {} to {} in location {}".format(
                                     selected_location.path,
                                     selected_location.name,
@@ -557,6 +564,22 @@ class CWLTransferStep(TransferStep):
                 load_contents="contents" in token_value,
                 load_listing=LoadListing.no_listing,
             )
+
+            if (
+                "checksum" in token_value
+                and new_token_value["checksum"] != token_value["checksum"]
+            ):
+                raise WorkflowTransferException(
+                    "Error transferring file {} in location {} to {} in location {}.".format(
+                        token_value["path"],
+                        "Unreachable-location",
+                        new_token_value["path"],
+                        self.workflow.context.data_manager.get_data_locations(
+                            path=new_token_value["path"], location_type=DataType.PRIMARY
+                        )[0],
+                    )
+                )
+
             # If listing is specified, recursively process its contents
             if "listing" in token_value:
                 new_token_value["listing"] = await asyncio.gather(
