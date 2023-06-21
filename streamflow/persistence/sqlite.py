@@ -12,10 +12,11 @@ from streamflow.core.asyncache import cachedmethod
 from streamflow.core.context import StreamFlowContext
 from streamflow.core.deployment import Target
 from streamflow.core.persistence import DependencyType
-from streamflow.core.utils import get_date_from_ns
+from streamflow.core.utils import get_date_from_ns, get_class_fullname
 from streamflow.core.workflow import Port, Status, Step, Token
 from streamflow.persistence.base import CachedDatabase
 from streamflow.version import VERSION
+from streamflow.workflow.step import ExecuteStep
 
 DEFAULT_SQLITE_CONNECTION = os.path.join(
     os.path.expanduser("~"), ".streamflow", VERSION, "sqlite.db"
@@ -244,6 +245,39 @@ class SqliteDatabase(CachedDatabase):
                 {"dependee": token_id},
             ) as cursor:
                 return await cursor.fetchall()
+
+    async def get_port_by_token(
+        self, token_id: int
+    ) -> MutableSequence[MutableMapping[str, Any]]:
+        async with self.connection as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT port.* FROM token JOIN port ON token.port = port.id WHERE token.id = :token_id",
+                {"token_id": token_id},
+            ) as cursor:
+                return await cursor.fetchone()
+
+    async def get_job_out_token(
+        self, job_token_id: int
+    ) -> MutableSequence[MutableMapping[str, Any]]:
+        async with self.connection as db:
+            db.row_factory = aiosqlite.Row
+            # todo: ottimizzare le query (left, right, inner, outer join)
+            async with db.execute(
+                "SELECT token.* "
+                "FROM provenance JOIN token ON provenance.depender=token.id "
+                "JOIN port ON token.port=port.id "
+                "JOIN dependency ON dependency.port=port.id "
+                "JOIN step ON step.id=dependency.step "
+                "WHERE step.type=:step_type AND dependency.type=:dep_type "
+                "AND provenance.dependee=:job_token_id",
+                {
+                    "job_token_id": job_token_id,
+                    "dep_type": DependencyType.OUTPUT.value,
+                    "step_type": get_class_fullname(ExecuteStep),
+                },
+            ) as cursor:
+                return await cursor.fetchone()
 
     async def get_command(self, command_id: int) -> MutableMapping[str, Any]:
         async with self.connection as db:
