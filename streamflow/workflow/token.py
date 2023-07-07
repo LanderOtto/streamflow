@@ -91,7 +91,7 @@ class ListToken(Token):
 
     async def is_available(self, context: StreamFlowContext):
         return all(
-            asyncio.gather(
+            await asyncio.gather(
                 *(asyncio.create_task(t.is_available(context)) for t in self.value)
             )
         )
@@ -143,7 +143,7 @@ class ObjectToken(Token):
 
     async def is_available(self, context: StreamFlowContext):
         return all(
-            asyncio.gather(
+            await asyncio.gather(
                 *(
                     asyncio.create_task(t.is_available(context))
                     for t in self.value.values()
