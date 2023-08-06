@@ -5,7 +5,6 @@ import asyncio
 import logging
 import os
 import sys
-import uuid
 from typing import Any, MutableMapping
 
 from streamflow import report
