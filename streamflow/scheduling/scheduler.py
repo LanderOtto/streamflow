@@ -318,16 +318,28 @@ class DefaultScheduler(Scheduler):
                     else:
                         if logger.isEnabledFor(logging.DEBUG):
                             logger.debug(
-                                "No location available for job {} on deployment {}.".format(
+                                "No location available for job {} on deployment {}.{}".format(
                                     job_context.job.name,
                                     posixpath.join(deployment, target.service)
                                     if target.service
                                     else deployment,
+                                    f" Retry in {self.retry_interval} seconds" if self.retry_interval else "",
                                 )
                             )
-                await asyncio.wait_for(
-                    self.wait_queues[deployment].wait(), timeout=self.retry_interval
-                )
+                try:
+                    await asyncio.wait_for(
+                        self.wait_queues[deployment].wait(), timeout=self.retry_interval
+                    )
+                except TimeoutError:
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(
+                            "Job {} woke up for scheduling on deployment {}".format(
+                                job_context.job.name,
+                                posixpath.join(deployment, target.service)
+                                if target.service
+                                else deployment,
+                            )
+                        )
 
     async def close(self):
         pass
