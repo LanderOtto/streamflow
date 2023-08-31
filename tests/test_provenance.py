@@ -69,7 +69,6 @@ async def _general_test(
     token_list: MutableSequence[Token],
     port_name: str = "test",
 ):
-    """ """
     step = workflow.create_step(cls=step_cls, **kargs_step)
     step.add_input_port(port_name, in_port)
     step.add_output_port(port_name, out_port)
@@ -80,26 +79,6 @@ async def _general_test(
     executor = StreamFlowExecutor(workflow)
     await executor.run()
     return step
-
-
-async def _load_dependees(token_id, loading_context, context):
-    rows = await context.database.get_dependees(token_id)
-    return await asyncio.gather(
-        *(
-            asyncio.create_task(loading_context.load_token(context, row["dependee"]))
-            for row in rows
-        )
-    )
-
-
-async def _load_dependers(token_id, loading_context, context):
-    rows = await context.database.get_dependers(token_id)
-    return await asyncio.gather(
-        *(
-            asyncio.create_task(loading_context.load_token(context, row["depender"]))
-            for row in rows
-        )
-    )
 
 
 def contains_id(id, token_list):
@@ -122,7 +101,7 @@ async def verify_dependency_tokens(
     token_reloaded = await context.database.get_token(token_id=token.persistent_id)
     assert token_reloaded["port"] == port.persistent_id
 
-    depender_list = await _load_dependers(token.persistent_id, loading_context, context)
+    depender_list = await loading_context.load_next_tokens(context, token.persistent_id)
     print(
         "depender:",
         {token.persistent_id: [t.persistent_id for t in depender_list]},
@@ -132,7 +111,7 @@ async def verify_dependency_tokens(
     for t1 in depender_list:
         assert contains_id(t1.persistent_id, expected_depender)
 
-    dependee_list = await _load_dependees(token.persistent_id, loading_context, context)
+    dependee_list = await loading_context.load_prev_tokens(context, token.persistent_id)
     print(
         "dependee:",
         {token.persistent_id: [t.persistent_id for t in dependee_list]},

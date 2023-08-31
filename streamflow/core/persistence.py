@@ -61,6 +61,14 @@ class DatabaseLoadingContext(ABC):
     async def load_workflow(self, context: StreamFlowContext, persistent_id: int):
         ...
 
+    @abstractmethod
+    async def load_prev_tokens(self, context: StreamFlowContext, persistent_id: int):
+        ...
+
+    @abstractmethod
+    async def load_next_tokens(self, context: StreamFlowContext, persistent_id: int):
+        ...
+
 
 class PersistableEntity:
     def __init__(self):
