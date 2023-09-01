@@ -368,7 +368,7 @@ async def build_token_value(
             )
             # Build listing tokens
             listing_tokens = await asyncio.gather(
-                *(
+                *(  # todo: add asyncio.create_task ?
                     build_token_value(
                         context=context,
                         js_context=js_context,
