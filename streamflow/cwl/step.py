@@ -138,7 +138,7 @@ class CWLConditionalStep(CWLBaseConditionalStep):
         context: StreamFlowContext,
         row: MutableMapping[str, Any],
         loading_context: DatabaseLoadingContext,
-        change_wf: Workflow = None,
+        change_wf: Workflow,
     ) -> CWLConditionalStep:
         params = json.loads(row["params"])
         return cls(
@@ -212,7 +212,7 @@ class CWLEmptyScatterConditionalStep(CWLBaseConditionalStep):
         context: StreamFlowContext,
         row: MutableMapping[str, Any],
         loading_context: DatabaseLoadingContext,
-        change_wf: Workflow = None,
+        change_wf: Workflow,
     ):
         params = json.loads(row["params"])
         return cls(

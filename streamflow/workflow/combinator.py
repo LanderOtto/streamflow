@@ -26,7 +26,7 @@ class CartesianProductCombinator(Combinator):
         context: StreamFlowContext,
         row: MutableMapping[str, Any],
         loading_context: DatabaseLoadingContext,
-        change_wf: Workflow = None,
+        change_wf: Workflow,
     ) -> CartesianProductCombinator:
         return cls(
             name=row["name"],
