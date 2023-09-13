@@ -190,7 +190,9 @@ async def follow_symlink(
                     status, command, location, result
                 )
             )
-        return result.strip()
+        if not (output := result.strip()):
+            raise WorkflowExecutionException(f"Symbolic Link {path} does not exists")
+        return output
 
 
 async def head(

@@ -32,9 +32,3 @@ class FailureHandlingException(WorkflowException):
 
 class InvalidPluginException(Exception):
     ...
-
-
-class UnrecoverableTokenException(WorkflowException):
-    def __init__(self, message: str, token: Token | None = None):
-        super().__init__(message)
-        self.token: Token = token
