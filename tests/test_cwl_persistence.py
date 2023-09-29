@@ -687,6 +687,8 @@ async def test_cwl_conditional_step(context: StreamFlowContext):
         expression_lib=[],  # MutableSequence[Any]
         full_js=True,
     )
+    # todo aggiungere
+    # step.add_skip_port()
     await save_load_and_test(step, context)
 
 

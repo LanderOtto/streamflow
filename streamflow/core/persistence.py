@@ -202,6 +202,18 @@ class Database(SchemaEntity):
         ...
 
     @abstractmethod
+    async def get_steps_from_input_port(
+        self, port_id: int
+    ) -> MutableSequence[MutableMapping[str, Any]]:
+        ...
+
+    @abstractmethod
+    async def get_steps_from_output_port(
+        self, port_id: int
+    ) -> MutableSequence[MutableMapping[str, Any]]:
+        ...
+
+    @abstractmethod
     async def get_port(self, port_id: int) -> MutableMapping[str, Any]:
         ...
 
