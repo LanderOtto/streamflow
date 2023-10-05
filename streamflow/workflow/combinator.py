@@ -198,7 +198,7 @@ class LoopTerminationCombinator(DotProductCombinator):
         self.output_items: MutableSequence[str] = []
         self.token_values: MutableMapping[
             str, MutableMapping[str, MutableSequence[Any]]
-        ] = {}
+        ] = {}  # todo: ma serve? è un attributo già presente nel DotProductCombinator
 
     def add_output_item(self, item: str) -> None:
         self.output_items.append(item)
@@ -213,3 +213,28 @@ class LoopTerminationCombinator(DotProductCombinator):
                 }
                 for k in self.output_items
             }
+
+    @classmethod
+    async def _load(
+        cls,
+        context: StreamFlowContext,
+        row: MutableMapping[str, Any],
+        loading_context: DatabaseLoadingContext,
+        change_wf: Workflow,
+    ) -> LoopTerminationCombinator:
+        combinator = cls(
+            name=row["name"],
+            workflow=change_wf
+            if change_wf
+            else await loading_context.load_workflow(context, row["workflow"]),
+        )
+        for item in row["output_items"]:
+            combinator.add_output_item(item)
+        return combinator
+
+    async def _save_additional_params(self, context: StreamFlowContext):
+        # self.token_values is not saved because it is always empty at the beginning of execution
+        return {
+            **await super()._save_additional_params(context),
+            **{"output_items": self.output_items},
+        }

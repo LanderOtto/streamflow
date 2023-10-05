@@ -244,13 +244,12 @@ async def test_loop_termination_combinator(context: StreamFlowContext):
     await workflow.save(context)
 
     name = utils.random_name()
+    combinator = LoopTerminationCombinator(name=utils.random_name(), workflow=workflow)
+    combinator.add_output_item("test")
     step = workflow.create_step(
-        cls=CombinatorStep,
-        name=name + "-combinator",
-        combinator=LoopTerminationCombinator(
-            name=utils.random_name(), workflow=workflow
-        ),
+        cls=CombinatorStep, name=name + "-combinator", combinator=combinator
     )
+
     await save_load_and_test(step, context)
 
 
