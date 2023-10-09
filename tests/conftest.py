@@ -126,6 +126,14 @@ def event_loop():
     loop.close()
 
 
+def random_dir_path(depth=3):
+    return os.path.join(" ", *(utils.random_name() for _ in range(depth)))
+
+
+def random_job_names(n_jobs=1):
+    return [os.path.join(random_dir_path(1), str(i)) for i in range(n_jobs)]
+
+
 def is_primitive_type(elem):
     return type(elem) in (int, float, str, bool)
 
