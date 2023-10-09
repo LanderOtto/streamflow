@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import tempfile
 from typing import TYPE_CHECKING
@@ -12,6 +13,9 @@ from streamflow.core.data import DataLocation
 from streamflow.core.deployment import LOCAL_LOCATION, Location
 from streamflow.core.recovery import CheckpointManager
 from streamflow.core.utils import random_name
+from streamflow.core.workflow import Token
+from streamflow.log_handler import logger
+from streamflow.recovery.utils import get_files_from_token
 
 if TYPE_CHECKING:
     from streamflow.core.context import StreamFlowContext
@@ -27,30 +31,49 @@ class DefaultCheckpointManager(CheckpointManager):
             "checkpoint",
             utils.random_name(),
         )
-        self.copy_tasks: MutableSequence = []
+        self.copy_tasks: MutableSequence[asyncio.Task] = []
 
     async def _async_local_copy(self, data_location: DataLocation):
         parent_directory = os.path.join(self.checkpoint_dir, random_name())
         local_path = os.path.join(parent_directory, data_location.relpath)
+        # todo: add a parameter in StreamFlow file to indicate the deployment (local or remote) to store checkpoint data
+        dst_location = Location(deployment=LOCAL_LOCATION, name=LOCAL_LOCATION)
+
+        # writable is setted to True, in this way it is not created a symbolic link if file is available in the same location
         await self.context.data_manager.transfer_data(
             src_locations=[data_location],
             src_path=data_location.path,
-            dst_locations=[Location(deployment=LOCAL_LOCATION, name=LOCAL_LOCATION)],
+            dst_locations=[dst_location],
             dst_path=local_path,
+            writable=True,
         )
+        if logger.isEnabledFor(logging.INFO):
+            logger.info(
+                f"CHECKPOINT file {data_location.path} in location {data_location.name} to {local_path} in location {dst_location.name}"
+            )
 
     async def close(self):
-        pass
+        for alive_task in (t for t in self.copy_tasks if not t.done()):
+            alive_task.cancel()
+
+    async def wait(self):
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                f"CHECKPOINT active copy tasks: {len([t for t in self.copy_tasks if not t.done()])}"
+            )
+        await asyncio.gather(*(t for t in self.copy_tasks if not t.done()))
+
+    def save_data(self, token: Token):
+        for file in get_files_from_token(token):
+            data_location = self.context.data_manager.get_data_locations(file)[0]
+            self.copy_tasks.append(
+                asyncio.create_task(self._async_local_copy(data_location))
+            )
 
     @classmethod
     def get_schema(cls) -> str:
         return pkg_resources.resource_filename(
             __name__, os.path.join("schemas", "default_checkpoint_manager.json")
-        )
-
-    def register(self, data_location: DataLocation) -> None:
-        self.copy_tasks.append(
-            asyncio.create_task(self._async_local_copy(data_location))
         )
 
 
@@ -64,5 +87,8 @@ class DummyCheckpointManager(CheckpointManager):
             __name__, os.path.join("schemas", "dummy_checkpoint_manager.json")
         )
 
-    def register(self, data_location: DataLocation) -> None:
+    async def wait(self):
+        pass
+
+    def save_data(self, token: Token):
         pass
