@@ -27,9 +27,9 @@ def get_binding_config(
         for target in config["targets"]:
             workdir = target.get("workdir") if target is not None else None
             if "deployment" in target:
-                target_deployment = workflow_config.deplyoments[target["deployment"]]
+                target_deployment = workflow_config.deployments[target["deployment"]]
             else:
-                target_deployment = workflow_config.deplyoments[target["model"]]
+                target_deployment = workflow_config.deployments[target["model"]]
                 if logger.isEnabledFor(logging.WARN):
                     logger.warn(
                         "The `model` keyword is deprecated and will be removed in StreamFlow 0.3.0. "
