@@ -11,7 +11,6 @@ import re
 import urllib.parse
 import uuid
 from abc import ABC, abstractmethod
-from json import JSONDecodeError
 from typing import Any, MutableMapping, MutableSequence, cast
 from zipfile import ZipFile
 
@@ -35,7 +34,6 @@ from streamflow.log_handler import logger
 from streamflow.version import VERSION
 from streamflow.workflow.token import FileToken, ListToken, ObjectToken
 from streamflow.workflow.utils import get_token_value
-
 
 ESCAPED_COMMA = re.compile(r"\\,")
 ESCAPED_DOT = re.compile(r"\\.")
@@ -662,7 +660,7 @@ class RunCrateProvenanceManager(ProvenanceManager, ABC):
                 v = ESCAPED_COMMA.sub(",", v)
                 try:
                     self.graph[dst][k] = json.loads(v)
-                except JSONDecodeError:
+                except json.JSONDecodeError:
                     self.graph[dst][k] = v
 
     @abstractmethod
@@ -690,7 +688,7 @@ class RunCrateProvenanceManager(ProvenanceManager, ABC):
         value = ESCAPED_COMMA.sub(",", value)
         try:
             current_obj[keys[-1]] = json.loads(value)
-        except JSONDecodeError:
+        except json.JSONDecodeError:
             current_obj[keys[-1]] = value
 
     async def create_archive(
@@ -731,7 +729,7 @@ class RunCrateProvenanceManager(ProvenanceManager, ABC):
             self.files_map[config] = config_checksum
             self.graph["./"]["hasPart"].append({"@id": config_file["@id"]})
             self.graph[config_file["@id"]] = config_file
-        # Add executons
+        # Add executions
         for wf_id, workflow in enumerate(self.workflows):
             wf_obj = await self.context.database.get_workflow(workflow.persistent_id)
             execution = {

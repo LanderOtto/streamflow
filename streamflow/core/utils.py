@@ -16,13 +16,11 @@ from typing import (
     TYPE_CHECKING,
 )
 
-import jsonref
-
 from streamflow.core.exception import WorkflowExecutionException
 from streamflow.core.persistence import PersistableEntity, DatabaseLoadingContext
 
 if TYPE_CHECKING:
-    from streamflow.core.context import SchemaEntity, StreamFlowContext
+    from streamflow.core.context import StreamFlowContext
     from streamflow.core.deployment import Connector, Location
     from streamflow.core.workflow import Token
     from typing import Iterable
@@ -59,6 +57,7 @@ class NamesStack:
 
 
 def create_command(
+    class_name: str,
     command: MutableSequence[str],
     environment: MutableMapping[str, str] = None,
     workdir: str | None = None,
@@ -66,27 +65,52 @@ def create_command(
     stdout: int | str = asyncio.subprocess.STDOUT,
     stderr: int | str = asyncio.subprocess.STDOUT,
 ) -> str:
+    # Format stdin
+    stdin = (
+        f" < {shlex.quote(stdin)}"
+        if stdin is not None and stdin != asyncio.subprocess.DEVNULL
+        else ""
+    )
+    # Format stderr
+    if stderr == asyncio.subprocess.DEVNULL:
+        stderr = "/dev/null"
+    if stderr == stdout:
+        stderr = " 2>&1"
+    elif stderr != asyncio.subprocess.STDOUT:
+        stderr = f" 2>{shlex.quote(stderr)}"
+    else:
+        stderr = ""
+    # Format stdout
+    if stdout == asyncio.subprocess.PIPE:
+        raise WorkflowExecutionException(
+            f"The `{class_name}` does not support `stdout` pipe redirection."
+        )
+    elif stdout == asyncio.subprocess.DEVNULL:
+        stdout = "/dev/null"
+    elif stdout != asyncio.subprocess.STDOUT:
+        stdout = f" > {shlex.quote(stdout)}"
+    else:
+        stdout = ""
+    if stderr == asyncio.subprocess.PIPE:
+        raise WorkflowExecutionException(
+            f"The `{class_name}` does not support `stderr` pipe redirection."
+        )
+    # Build command
     command = "".join(
         "{workdir}" "{environment}" "{command}" "{stdin}" "{stdout}" "{stderr}"
     ).format(
         workdir=f"cd {workdir} && " if workdir is not None else "",
-        environment="".join(
-            [f'export {key}="{value}" && ' for (key, value) in environment.items()]
-        )
-        if environment is not None
-        else "",
-        command=" ".join(command),
-        stdin=f" < {shlex.quote(stdin)}" if stdin is not None else "",
-        stdout=f" > {shlex.quote(stdout)}"
-        if stdout != asyncio.subprocess.STDOUT
-        else "",
-        stderr=(
-            " 2>&1"
-            if stderr == stdout
-            else f" 2>{shlex.quote(stderr)}"
-            if stderr != asyncio.subprocess.STDOUT
+        environment=(
+            "".join(
+                [f'export {key}="{value}" && ' for (key, value) in environment.items()]
+            )
+            if environment is not None
             else ""
         ),
+        command=" ".join(command),
+        stdin=stdin,
+        stdout=stdout,
+        stderr=stderr,
     )
     return command
 
@@ -198,7 +222,7 @@ async def get_remote_to_remote_write_command(
         return ["tar", "xf", "-", "-C", dst]
     # Otherwise, if destination path does not exist
     else:
-        # If basename must be renamed during trnasfer
+        # If basename must be renamed during transfer
         if posixpath.basename(src) != posixpath.basename(dst):
             is_src_dir, status = await src_connector.run(
                 location=src_location,
@@ -246,32 +270,6 @@ def get_tag(tokens: Iterable[Token]) -> str:
         if len(tag) > len(output_tag):
             output_tag = tag
     return output_tag
-
-
-def inject_schema(
-    schema: MutableMapping[str, Any],
-    classes: MutableMapping[str, type[SchemaEntity]],
-    definition_name: str,
-):
-    for name, entity in classes.items():
-        if entity_schema := entity.get_schema():
-            with open(entity_schema) as f:
-                entity_schema = jsonref.loads(
-                    f.read(),
-                    base_uri=f"file://{os.path.dirname(entity_schema)}/",
-                    jsonschema=True,
-                )
-            definition = schema["definitions"]
-            for el in definition_name.split(posixpath.sep):
-                definition = definition[el]
-            definition["properties"]["type"].setdefault("enum", []).append(name)
-            definition["definitions"][name] = entity_schema
-            definition.setdefault("allOf", []).append(
-                {
-                    "if": {"properties": {"type": {"const": name}}},
-                    "then": {"properties": {"config": entity_schema}},
-                }
-            )
 
 
 def random_name() -> str:

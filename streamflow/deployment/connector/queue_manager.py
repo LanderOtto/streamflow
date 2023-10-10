@@ -115,7 +115,8 @@ class SlurmService(QueueManagerService):
         switches: str | None = None,
         threadSpec: int | None = None,
         threadsPerCore: int | None = None,
-        timeMin: int | None = None,
+        time: str | None = None,
+        timeMin: str | None = None,
         tmp: int | None = None,
         tresPerTask: str | None = None,
         uid: int | str | None = None,
@@ -202,6 +203,7 @@ class SlurmService(QueueManagerService):
         self.switches: str | None = switches
         self.threadSpec: int | None = threadSpec
         self.threadsPerCore: int | None = threadsPerCore
+        self.time: str | None = time
         self.timeMin: str | None = timeMin
         self.tmp: int | None = tmp
         self.tresPerTask: str | None = tresPerTask
@@ -279,6 +281,7 @@ class FluxService(QueueManagerService):
         taskmap: str | None = None,
         tasksPerCore: int | None = None,
         tasksPerNode: int | None = None,
+        timeLimit: str | None = None,
         unbuffered: bool = False,
         urgency: int | None = None,
     ):
@@ -309,6 +312,7 @@ class FluxService(QueueManagerService):
         self.taskmap: str | None = taskmap
         self.tasksPerCore: int | None = tasksPerCore
         self.tasksPerNode: int | None = tasksPerNode
+        self.timeLimit: str | None = timeLimit
         self.unbuffered: bool = unbuffered
         self.urgency: int | None = urgency
 
@@ -339,7 +343,8 @@ class QueueManagerConnector(ConnectorWrapper, ABC):
             if logger.isEnabledFor(logging.WARN):
                 logger.warn(
                     "Inline SSH options are deprecated and will be removed in StreamFlow 0.3.0. "
-                    "Define a standalone SSH connector and link to it using the `connector` property."
+                    f"Define a standalone `SSHConnector` and link the `{self.__class__.__name__}` "
+                    "to it using the `wraps` property."
                 )
             self._inner_ssh_connector = True
             connector: Connector = SSHConnector(
@@ -358,9 +363,13 @@ class QueueManagerConnector(ConnectorWrapper, ABC):
             )
         super().__init__(deployment_name, config_dir, connector)
         files_map: MutableMapping[str, Any] = {}
-        self.services: MutableMapping[str, QueueManagerService] = services or {}
-        if services:
-            for name, service in services.items():
+        self.services = (
+            {k: self._service_class(**v) for k, v in services.items()}
+            if services
+            else {}
+        )
+        if self.services:
+            for name, service in self.services.items():
                 if service.file is not None:
                     with open(os.path.join(self.config_dir, service.file)) as f:
                         files_map[name] = f.read()
@@ -386,6 +395,15 @@ class QueueManagerConnector(ConnectorWrapper, ABC):
             maxsize=1, ttl=self.pollingInterval
         )
         self.jobsCacheLock: asyncio.Lock = asyncio.Lock()
+
+    def _format_stream(self, stream: int | str) -> str:
+        if stream == asyncio.subprocess.DEVNULL:
+            stream = "/dev/null"
+        elif stream == asyncio.subprocess.PIPE:
+            raise WorkflowExecutionException(
+                f"The `{self.__class__.__name__}` does not support stream pipe redirection."
+            )
+        return shlex.quote(stream)
 
     async def _get_location(self):
         locations = await self.connector.get_available_locations()
@@ -426,6 +444,11 @@ class QueueManagerConnector(ConnectorWrapper, ABC):
     ) -> str:
         ...
 
+    @property
+    @abstractmethod
+    def _service_class(self) -> type[QueueManagerService]:
+        ...
+
     async def get_available_locations(
         self,
         service: str | None = None,
@@ -463,7 +486,10 @@ class QueueManagerConnector(ConnectorWrapper, ABC):
     ) -> tuple[Any | None, int] | None:
         if job_name:
             command = utils.create_command(
-                command=command, environment=environment, workdir=workdir
+                class_name=self.__class__.__name__,
+                command=command,
+                environment=environment,
+                workdir=workdir,
             )
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(
@@ -627,6 +653,10 @@ class SlurmConnector(QueueManagerConnector):
         )
         return [j.strip() for j in stdout.strip().splitlines()]
 
+    @property
+    def _service_class(self) -> type[QueueManagerService]:
+        return SlurmService
+
     async def _remove_jobs(self, location: Location) -> None:
         await self.connector.run(
             location=location, command=["scancel", " ".join(self.scheduledJobs)]
@@ -653,12 +683,12 @@ class SlurmConnector(QueueManagerConnector):
             "sbatch",
             "--parsable",
         ]
-        if stdin is not None:
+        if stdin is not None and stdin != asyncio.subprocess.DEVNULL:
             batch_command.append(get_option("input", shlex.quote(stdin)))
         if stderr != asyncio.subprocess.STDOUT and stderr != stdout:
-            batch_command.append(get_option("error", shlex.quote(stderr)))
+            batch_command.append(get_option("error", self._format_stream(stderr)))
         if stdout != asyncio.subprocess.STDOUT:
-            batch_command.append(get_option("output", shlex.quote(stdout)))
+            batch_command.append(get_option("output", self._format_stream(stdout)))
         if timeout:
             batch_command.append(
                 get_option("time", utils.format_seconds_to_hhmmss(timeout))
@@ -754,6 +784,8 @@ class SlurmConnector(QueueManagerConnector):
                     get_option("wckey", service.wckey),
                 ]
             )
+            if not timeout:
+                batch_command.append(get_option("time", service.time))
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(f"Running command {' '.join(batch_command)}")
         stdout, returncode = await self.connector.run(
@@ -858,10 +890,10 @@ class PBSConnector(QueueManagerConnector):
                 ),
             ]
         )
-        if stdin is not None:
+        if stdin is not None and stdin != asyncio.subprocess.DEVNULL:
             batch_command.append(get_option("i", stdin))
         if stderr != asyncio.subprocess.STDOUT and stderr != stdout:
-            batch_command.append(get_option("e", stderr))
+            batch_command.append(get_option("e", self._format_stream(stderr)))
         if stderr == stdout:
             batch_command.append(get_option("j", "oe"))
         if service := cast(PBSService, self.services.get(location.service)):
@@ -917,6 +949,10 @@ class PBSConnector(QueueManagerConnector):
             capture_output=True,
         )
         return stdout.strip()
+
+    @property
+    def _service_class(self) -> type[QueueManagerService]:
+        return PBSService
 
 
 class FluxConnector(QueueManagerConnector):
@@ -1023,14 +1059,16 @@ class FluxConnector(QueueManagerConnector):
         ]
         if workdir is not None:
             batch_command.append(get_option("cwd", workdir))
-        if stdin is not None:
+        if stdin is not None and stdin != asyncio.subprocess.DEVNULL:
             batch_command.append(get_option("input", shlex.quote(stdin)))
         if stdout != asyncio.subprocess.STDOUT:
-            batch_command.append(get_option("output", shlex.quote(stdout)))
+            batch_command.append(get_option("output", self._format_stream(stdout)))
         if stderr != asyncio.subprocess.STDOUT and stderr != stdout:
-            batch_command.append(get_option("error", shlex.quote(stderr)))
+            batch_command.append(get_option("error", self._format_stream(stderr)))
         if timeout:
-            batch_command.extend(["-t", utils.format_seconds_to_hhmmss(timeout)])
+            batch_command.append(
+                get_option("time-limit", utils.format_seconds_to_hhmmss(timeout))
+            )
         nodes = 1
         if service := cast(FluxService, self.services.get(location.service)):
             nodes = service.nodes
@@ -1069,6 +1107,8 @@ class FluxConnector(QueueManagerConnector):
                     get_option("urgency", service.urgency),
                 ]
             )
+            if not timeout:
+                batch_command.append(get_option("time-limit", service.timeLimit))
         batch_command.append(get_option("nodes", nodes))
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(f"Running command {' '.join(batch_command)}")
@@ -1081,3 +1121,7 @@ class FluxConnector(QueueManagerConnector):
             raise WorkflowExecutionException(
                 f"Error submitting job {job_name} to Flux: {stdout.strip()}"
             )
+
+    @property
+    def _service_class(self) -> type[QueueManagerService]:
+        return FluxService

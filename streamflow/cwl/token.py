@@ -20,7 +20,7 @@ async def _get_file_token_weight(context: StreamFlowContext, value: Any):
     else:
         if path := utils.get_path_from_token(value):
             data_locations = context.data_manager.get_data_locations(
-                path=path, location_type=DataType.PRIMARY
+                path=path, data_type=DataType.PRIMARY
             )
             if data_locations:
                 location = list(data_locations)[0]

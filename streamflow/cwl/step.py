@@ -504,7 +504,7 @@ class CWLTransferStep(TransferStep):
                         f"WARN. Il file {filepath} è disponibile su {d} prima del transfer"
                     )
             await self.workflow.context.data_manager.transfer_data(
-                src_locations=[selected_location],
+                src_location=selected_location,
                 src_path=selected_location.path,
                 dst_locations=dst_locations,
                 dst_path=filepath,
@@ -524,7 +524,7 @@ class CWLTransferStep(TransferStep):
                 data_locations = self.workflow.context.data_manager.get_data_locations(
                     path=filepath,
                     deployment=dst_connector.deployment_name,
-                    location_type=DataType.SYMBOLIC_LINK,
+                    data_type=DataType.SYMBOLIC_LINK,
                 )
                 # If the remote location is not a symbolic link, perform remote checksum
                 original_checksum = token_value["checksum"]
@@ -627,10 +627,10 @@ class CWLTransferStep(TransferStep):
                 and new_token_value["checksum"] != token_value["checksum"]
             ):
                 loc = self.workflow.context.data_manager.get_data_locations(
-                    path=token_value["path"], location_type=DataType.PRIMARY
+                    path=token_value["path"], data_type=DataType.PRIMARY
                 )
                 new_loc = self.workflow.context.data_manager.get_data_locations(
-                    path=new_token_value["path"], location_type=DataType.PRIMARY
+                    path=new_token_value["path"], data_type=DataType.PRIMARY
                 )
                 raise WorkflowTransferException(
                     "Error transferring file {} in location {} to {} in location {}.".format(

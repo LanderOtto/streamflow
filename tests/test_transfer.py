@@ -1,3 +1,4 @@
+import asyncio
 import os
 import posixpath
 import tempfile
@@ -11,12 +12,12 @@ from streamflow.core.deployment import Connector, Location
 from streamflow.data import remotepath
 from streamflow.deployment.connector import LocalConnector
 from streamflow.deployment.utils import get_path_processor
-from tests.conftest import deployment_types, get_location
+from tests.conftest import get_location
 
 
-@pytest_asyncio.fixture(scope="module", params=deployment_types())
-async def src_location(context, request) -> Location:
-    return await get_location(context, request)
+@pytest_asyncio.fixture(scope="module")
+async def src_location(context, deployment_src) -> Location:
+    return await get_location(context, deployment_src)
 
 
 @pytest.fixture(scope="module")
@@ -24,9 +25,9 @@ def src_connector(context, src_location) -> Connector:
     return context.deployment_manager.get_connector(src_location.deployment)
 
 
-@pytest_asyncio.fixture(scope="module", params=deployment_types())
-async def dst_location(context, request) -> Location:
-    return await get_location(context, request)
+@pytest_asyncio.fixture(scope="module")
+async def dst_location(context, deployment_dst) -> Location:
+    return await get_location(context, deployment_dst)
 
 
 @pytest.fixture(scope="module")
@@ -75,7 +76,7 @@ async def test_directory_to_directory(
             data_type=DataType.PRIMARY,
         )
         await context.data_manager.transfer_data(
-            src_locations=[src_location],
+            src_location=src_location,
             src_path=src_path,
             dst_locations=[dst_location],
             dst_path=dst_path,
@@ -130,7 +131,7 @@ async def test_file_to_directory(
             data_type=DataType.PRIMARY,
         )
         await context.data_manager.transfer_data(
-            src_locations=[src_location],
+            src_location=src_location,
             src_path=src_path,
             dst_locations=[dst_location],
             dst_path=dst_path,
@@ -166,7 +167,12 @@ async def test_file_to_file(
     else:
         dst_path = posixpath.join("/tmp", utils.random_name())
     try:
-        await remotepath.write(src_connector, src_location, src_path, "StreamFlow")
+        await remotepath.write(
+            src_connector,
+            src_location,
+            src_path,
+            "StreamFlow",
+        )
         src_path = await remotepath.follow_symlink(
             context, src_connector, src_location, src_path
         )
@@ -182,7 +188,7 @@ async def test_file_to_file(
             data_type=DataType.PRIMARY,
         )
         await context.data_manager.transfer_data(
-            src_locations=[src_location],
+            src_location=src_location,
             src_path=src_path,
             dst_locations=[dst_location],
             dst_path=dst_path,
@@ -196,3 +202,20 @@ async def test_file_to_file(
     finally:
         await remotepath.rm(src_connector, src_location, src_path)
         await remotepath.rm(dst_connector, dst_location, dst_path)
+
+
+@pytest.mark.asyncio
+async def test_multiple_files(
+    context, src_connector, src_location, dst_connector, dst_location
+):
+    """Test transferring multiple files simultaneously from one location to another."""
+    await asyncio.gather(
+        *(
+            asyncio.create_task(
+                test_file_to_file(
+                    context, src_connector, src_location, dst_connector, dst_location
+                )
+            )
+            for _ in range(20)
+        )
+    )

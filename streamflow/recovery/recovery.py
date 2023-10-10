@@ -9,7 +9,7 @@ from streamflow.core.context import StreamFlowContext
 from streamflow.core.utils import (
     get_class_fullname,
     get_class_from_name,
-    contains_id,
+    contains_id, compare_tags, get_tag_level,
 )
 from streamflow.core.exception import (
     FailureHandlingException,
@@ -23,15 +23,11 @@ from streamflow.cwl.transformer import (
     OutputForwardTransformer,
 )
 from streamflow.recovery.utils import (
-    str_tok,
-    compare_tags_relaxed,
     is_output_port_forward,
     is_next_of_someone,
     get_steps_from_output_port,
-    check_double_reference,
     _is_token_available,
     get_necessary_tokens,
-    get_tag_level,
     get_prev_vertices,
     INIT_DAG_FLAG,
     TOKEN_WAITER,
@@ -119,11 +115,11 @@ class WorkflowRecovery(RecoveryContext):
                         else:
                             return
         print(
-            f"add_into_vertex: Aggiungo token {str_tok(token_to_add)} id {token_to_add.persistent_id} tag {token_to_add.tag} nella port_tokens[{port_name_to_add}]"
+            f"add_into_vertex: Aggiungo token {token_to_add} id {token_to_add.persistent_id} tag {token_to_add.tag} nella port_tokens[{port_name_to_add}]"
         )
         if False and output_port_forward:
             for t_id in self.port_tokens.get(port_name_to_add, []):
-                comparison = compare_tags_relaxed(
+                comparison = -compare_tags(
                     token_to_add.tag, self.token_visited[t_id][0].tag
                 )
                 if comparison == 0:
@@ -339,8 +335,6 @@ class WorkflowRecovery(RecoveryContext):
                 )
 
         print("build_dag: While tokens terminato")
-        check_double_reference(self.dag_ports)
-
         print(
             f"build_dag: JobTokens: {set([ t.value.name for t, _ in get_necessary_tokens(self.port_tokens, all_token_visited).values() if isinstance(t, JobToken)])}"
         )
@@ -349,7 +343,7 @@ class WorkflowRecovery(RecoveryContext):
         print()
         for t, a in all_token_visited.values():
             print(
-                f"build_dag: Token id: {t.persistent_id} tag: {t.tag} val: {str_tok(t)} is available? {a}"
+                f"build_dag: Token id: {t.persistent_id} tag: {t.tag} val: {t} is available? {a}"
             )
         print(
             f"build_dag: available_new_job_tokens n.elems: {len(available_new_job_tokens)}",
@@ -515,7 +509,7 @@ class WorkflowRecovery(RecoveryContext):
                         f"remove_prev: prev token id {token_row['dependee']} tag {self.token_visited[token_row['dependee']][0].tag} non è presente tra i token visitati, lo aggiungo"
                     )
                 print(
-                    f"remove_prev: token {token_id_to_remove} rm prev token id: {token_row['dependee']} val: {str_tok(self.token_visited[token_row['dependee']][0])} tag: {self.token_visited[token_row['dependee']][0].tag}"
+                    f"remove_prev: token {token_id_to_remove} rm prev token id: {token_row['dependee']} val: {self.token_visited[token_row['dependee']][0]} tag: {self.token_visited[token_row['dependee']][0].tag}"
                 )
 
                 port_dependee_row = await self.context.database.get_port_from_token(
@@ -697,6 +691,8 @@ async def _put_tokens(
                     f"put_tokens: Port {port.name}, with {len(port.token_list)} tokens, inserts IterationTerminationToken with tag {port.token_list[0].tag}"
                 )
                 port.put(IterationTerminationToken(port.token_list[0].tag))
+            else:
+                port.put(TerminationToken())
         else:
             print(
                 f"put_tokens: Port {port.name}, with {len(port.token_list)} tokens, does NOT insert TerminationToken"

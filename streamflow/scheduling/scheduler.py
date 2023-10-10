@@ -47,7 +47,7 @@ class DefaultScheduler(Scheduler):
         self.allocation_groups: MutableMapping[str, MutableSequence[Job]] = {}
         self.binding_filter_map: MutableMapping[str, BindingFilter] = {}
         self.policy_map: MutableMapping[str, Policy] = {}
-        self.retry_interval: int | None = retry_delay
+        self.retry_interval: int | None = retry_delay if retry_delay != 0 else None
         self.scheduling_groups: MutableMapping[str, MutableSequence[str]] = {}
         self.wait_queues: MutableMapping[str, asyncio.Condition] = {}
 
@@ -142,7 +142,6 @@ class DefaultScheduler(Scheduler):
     async def _get_locations(
         self,
         job: Job,
-        deployment: str,
         hardware_requirement: Hardware,
         locations: int,
         scheduling_policy: Policy,
@@ -153,7 +152,6 @@ class DefaultScheduler(Scheduler):
             selected_location = await scheduling_policy.get_location(
                 context=self.context,
                 job=job,
-                deployment=deployment,
                 hardware_requirement=hardware_requirement,
                 available_locations=available_locations,
                 jobs=self.job_allocations,
@@ -297,7 +295,6 @@ class DefaultScheduler(Scheduler):
                                 ]:
                                     selected_locations = await self._get_locations(
                                         job=job_context.job,
-                                        deployment=target.deployment.name,
                                         hardware_requirement=hardware_requirement,
                                         locations=target.locations,
                                         scheduling_policy=self._get_policy(
@@ -323,7 +320,6 @@ class DefaultScheduler(Scheduler):
                         else:
                             selected_locations = await self._get_locations(
                                 job=job_context.job,
-                                deployment=target.deployment.name,
                                 hardware_requirement=hardware_requirement,
                                 locations=target.locations,
                                 scheduling_policy=self._get_policy(
@@ -359,13 +355,14 @@ class DefaultScheduler(Scheduler):
                     )
                 except TimeoutError:
                     if logger.isEnabledFor(logging.DEBUG):
+                        target_name = (
+                            "/".join([target.deployment.name, target.service])
+                            if target.service is not None
+                            else target.deployment.name
+                        )
                         logger.debug(
-                            "Job {} woke up for scheduling on deployment {}".format(
-                                job_context.job.name,
-                                posixpath.join(deployment, target.service)
-                                if target.service
-                                else deployment,
-                            )
+                            f"No locations available for job {job_context.job.name} "
+                            f"in target {target_name}. Waiting {self.retry_interval} seconds."
                         )
 
     async def close(self):

@@ -26,7 +26,7 @@ import pkg_resources
 import yaml
 from cachetools import Cache, TTLCache
 from kubernetes_asyncio import client
-from kubernetes_asyncio.client import ApiClient, Configuration, V1Container
+from kubernetes_asyncio.client import ApiClient, Configuration, V1Container, V1PodList
 from kubernetes_asyncio.config import (
     ConfigException,
     load_incluster_config,
@@ -425,7 +425,7 @@ class BaseKubernetesConnector(BaseConnector, ABC):
         )
 
     @abstractmethod
-    async def _get_running_pods(self) -> MutableSequence[Any]:
+    async def _get_running_pods(self) -> V1PodList:
         ...
 
     def _get_stream_reader(self, location: Location, src: str) -> StreamWrapperContext:
@@ -507,7 +507,13 @@ class BaseKubernetesConnector(BaseConnector, ABC):
         job_name: str | None = None,
     ) -> tuple[Any | None, int] | None:
         command = utils.create_command(
-            command, environment, workdir, stdin, stdout, stderr
+            self.__class__.__name__,
+            command,
+            environment,
+            workdir,
+            stdin,
+            stdout,
+            stderr,
         )
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
@@ -627,7 +633,7 @@ class KubernetesConnector(BaseKubernetesConnector):
         fcn_to_call = f"{group}{version.capitalize()}Api"
         return getattr(client, fcn_to_call)(self.client.api_client)
 
-    async def _get_running_pods(self) -> MutableSequence[Any]:
+    async def _get_running_pods(self) -> V1PodList:
         return await self.client.list_namespaced_pod(
             namespace=self.namespace or "default",
             field_selector="status.phase=Running",
@@ -986,7 +992,7 @@ class Helm3Connector(BaseKubernetesConnector):
             f"{get_option('repository-config', self.repositoryConfig)}"
         )
 
-    async def _get_running_pods(self) -> MutableSequence[Any]:
+    async def _get_running_pods(self) -> V1PodList:
         return await self.client.list_namespaced_pod(
             namespace=self.namespace or "default",
             label_selector=f"app.kubernetes.io/instance={self.releaseName}",

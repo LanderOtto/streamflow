@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import json
 import logging
-import os
 import sys
-from typing import Any, MutableMapping
+from pathlib import PurePosixPath
+from typing import Any, MutableMapping, MutableSequence
 
-import jsonref
 from importlib_metadata import entry_points
+from referencing._core import Resolver, Resource
 
+from streamflow.config.schema import SfSchema
 from streamflow.core.exception import InvalidPluginException
 from streamflow.core.utils import get_class_fullname
 from streamflow.ext.plugin import StreamFlowPlugin, extension_points
@@ -37,12 +39,14 @@ def _flatten_all_of(entity_schema):
     return dict(sorted(entity_schema["properties"].items()))
 
 
-def _get_property_desc(k: str, obj: MutableMapping[str, Any]) -> str:
+def _get_property_desc(
+    k: str, obj: MutableMapping[str, Any], refs: MutableMapping[str, Any]
+) -> str:
     property_desc = [k]
     if "type" in obj:
-        property_desc[0] = f"{property_desc[0]}: {_get_type_repr(obj)}"
+        property_desc[0] = f"{property_desc[0]}: {_get_type_repr(obj, refs)}"
     elif "oneOf" in obj:
-        types = [_get_type_repr(oo) for oo in obj["oneOf"] if "type" in oo]
+        types = [_get_type_repr(oo, refs) for oo in obj["oneOf"] if "type" in oo]
         property_desc[0] = f"{property_desc[0]}: Union[{', '.join(types)}]"
     if "default" in obj:
         property_desc[0] = f"{property_desc[0]} (default: {obj['default']})"
@@ -51,24 +55,89 @@ def _get_property_desc(k: str, obj: MutableMapping[str, Any]) -> str:
     return "\n".join(property_desc)
 
 
-def _get_type_repr(obj: MutableMapping[str, Any]) -> str | None:
+def _replace_refs(contents: Any, resolver: Resolver):
+    refs = {}
+    _resolve_refs(contents, resolver, PurePosixPath("/"), refs)
+    refs = {k: v for k, v in sorted(refs.items())}
+    for k, v in refs.items():
+        path = PurePosixPath(k)
+        element = contents
+        for part in path.parts[1:]:
+            if isinstance(element, MutableMapping):
+                element = element[part]
+            elif isinstance(element, MutableSequence):
+                element = element[int(part)]
+        element.update(v)
+
+
+def _resolve_refs(
+    contents: Any,
+    resolver: Resolver,
+    path: PurePosixPath,
+    refs: MutableMapping[str, Any],
+):
+    if isinstance(contents, MutableMapping):
+        for k, v in contents.items():
+            _resolve_refs(v, resolver, path / k, refs)
+    elif isinstance(contents, MutableSequence) and not isinstance(contents, str):
+        for i, v in enumerate(contents):
+            _resolve_refs(v, resolver, path / str(i), refs)
+    if isinstance(contents, MutableMapping) and isinstance(contents.get("$ref"), str):
+        resolved = resolver.lookup(contents.pop("$ref"))
+        _resolve_refs(resolved.contents, resolved.resolver, path, refs)
+        refs[path.as_posix()] = resolved.contents
+
+
+def _get_type_repr(
+    obj: MutableMapping[str, Any], refs: MutableMapping[str, Any]
+) -> str | None:
     if "type" in obj:
         if obj["type"] == "object":
             if "patternProperties" in obj:
                 if len(obj["patternProperties"]) > 1:
                     types = [
-                        _get_type_repr(t) for t in obj["patternProperties"].values()
+                        _get_type_repr(t, refs)
+                        for t in obj["patternProperties"].values()
                     ]
                     type_ = f"Union[{', '.join(types)}]"
                 else:
-                    type_ = _get_type_repr(list(obj["patternProperties"].values())[0])
+                    type_ = _get_type_repr(
+                        list(obj["patternProperties"].values())[0], refs
+                    )
                 return f"Map[str, {type_}]"
+            elif "title" in obj:
+                refs[obj["title"]] = obj.get("properties", {})
+                return obj["title"]
             else:
-                return obj.get("title", "object")
+                return "object"
         else:
             return obj["type"]
     else:
         return None
+
+
+def _split_refs(refs: MutableMapping[str, Any], processed: MutableSequence[str]):
+    refs_descs = {}
+    subrefs = {}
+    for k, v in refs.items():
+        refs_descs[k] = [
+            _get_property_desc(name, prop, subrefs) for name, prop in v.items()
+        ]
+        processed.append(k)
+    if subrefs := {k: v for k, v in subrefs.items() if k not in processed}:
+        refs_descs = {**refs_descs, **_split_refs(subrefs, processed)}
+    return refs_descs
+
+
+def _split_schema(schema: MutableMapping[str, Any]):
+    required, optional = [], []
+    refs = {}
+    for k, v in schema.get("properties", {}).items():
+        if k in schema.get("required", []):
+            required.append(_get_property_desc(k, v, refs))
+        else:
+            optional.append(_get_property_desc(k, v, refs))
+    return required, optional, refs
 
 
 def list_extensions(name: str | None, type_: str | None):
@@ -238,12 +307,11 @@ def show_extension(name: str, type_: str):
     if class_ is not None:
         class_name = get_class_fullname(class_)
         entity_schema = class_.get_schema()
+        schema = SfSchema()
         with open(entity_schema) as f:
-            entity_schema = jsonref.loads(
-                f.read(),
-                base_uri=f"file://{os.path.dirname(entity_schema)}/",
-                jsonschema=True,
-            )
+            resource = Resource.from_contents(json.load(f))
+            entity_schema = resource.contents
+        _replace_refs(entity_schema, schema.registry.resolver(base_uri=resource.id()))
         if "allOf" in entity_schema:
             entity_schema["properties"] = _flatten_all_of(entity_schema)
         format_string = (
@@ -259,20 +327,21 @@ def show_extension(name: str, type_: str):
         )
         print(format_string.format("NAME", "CLASS_NAME", "PLUGIN"))
         print(format_string.format(name, class_name, plugin))
-        property_descs = []
-        for k, v in entity_schema.get("properties", {}).items():
-            if k in entity_schema.get("required", []):
-                property_descs.append(_get_property_desc(k, v))
-        if property_descs:
-            print("\nREQUIRED\n")
-            print("\n---\n".join(property_descs))
-            property_descs = []
-        for k, v in entity_schema.get("properties", {}).items():
-            if k not in entity_schema.get("required", []):
-                property_descs.append(_get_property_desc(k, v))
-        if property_descs:
-            print("\nOPTIONAL\n")
-            print("\n---\n".join(property_descs))
+        required, optional, refs = _split_schema(entity_schema)
+        if required:
+            print("\n===================\nREQUIRED PROPERTIES\n===================\n")
+            print("\n---\n".join(required))
+        if optional:
+            print("\n===================\nOPTIONAL PROPERTIES\n===================\n")
+            print("\n---\n".join(optional))
+        if refs:
+            print("\n================\nTYPE DEFINITIONS\n================")
+            refs = _split_refs(refs, [])
+            for key, ref in refs.items():
+                print("\n" + "-" * len(key))
+                print(key)
+                print("-" * len(key) + "\n")
+                print("\n---\n".join(ref))
     else:
         print(
             f"No StreamFlow extension `{name}` of type `{type_}` detected.",

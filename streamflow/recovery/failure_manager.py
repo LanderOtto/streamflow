@@ -24,7 +24,6 @@ from streamflow.recovery.recovery import (
     JobVersion,
     _is_token_available,
     INIT_DAG_FLAG,
-    check_double_reference,
     get_necessary_tokens,
     is_next_of_someone,
     TOKEN_WAITER,
@@ -33,7 +32,6 @@ from streamflow.recovery.recovery import (
     _populate_workflow_lean,
 )
 from streamflow.recovery.utils import get_execute_step_out_token_ids, get_token_by_tag
-)
 from streamflow.workflow.step import ScatterStep, TransferStep
 from streamflow.workflow.executor import StreamFlowExecutor
 from streamflow.workflow.step import ExecuteStep
@@ -325,12 +323,10 @@ class DefaultFailureManager(FailureManager):
                             ]:
                                 await wr.remove_token_by_id(prev_t_id)
 
-                        check_double_reference(wr.dag_ports)
                         for p in execute_step_outports:
                             if not is_next_of_someone(p.name, wr.dag_ports):
                                 wr.dag_ports[INIT_DAG_FLAG].add(p.name)
                             wr.port_tokens.setdefault(p.name, set()).add(TOKEN_WAITER)
-                        check_double_reference(wr.dag_ports)
 
                         print(
                             f"SYNCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC job {token.value.name}",
@@ -517,15 +513,13 @@ class DefaultFailureManager(FailureManager):
             wr.dag_ports[INIT_DAG_FLAG],
             wr.port_tokens,
             wr.token_visited,
-            wr.dag_ports,
-            wr,
         )
         print("end _put_tokens")
 
         # for debug
         print("New workflow", new_workflow.name, "popolato così:")
         print("\tJobs da rieseguire:", job_executed_in_new_workflow)
-        dag_workflow(new_workflow, dir_path + "/new-wf")
+        # dag_workflow(new_workflow, dir_path + "/new-wf")
         for step in new_workflow.steps.values():
             print(f"step {step.name} wf {step.workflow.name}")
             try:
