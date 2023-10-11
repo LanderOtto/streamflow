@@ -19,6 +19,7 @@ from streamflow.core.exception import (
 )
 from streamflow.core.recovery import FailureManager
 from streamflow.core.workflow import CommandOutput, Job, Status, Step, Port, Token
+from streamflow.cwl.step import CWLLoopConditionalStep, CWLRecoveryLoopConditionalStep
 from streamflow.log_handler import logger
 from streamflow.recovery.recovery import (
     JobVersion,
@@ -31,12 +32,20 @@ from streamflow.recovery.recovery import (
     WorkflowRecovery,
     _populate_workflow_lean,
 )
-from streamflow.recovery.utils import get_execute_step_out_token_ids, get_token_by_tag
+from streamflow.recovery.utils import (
+    get_execute_step_out_token_ids,
+    get_token_by_tag,
+    str_id,
+)
+from streamflow.token_printer import dag_workflow
 from streamflow.workflow.step import ScatterStep, TransferStep
 from streamflow.workflow.executor import StreamFlowExecutor
 from streamflow.workflow.step import ExecuteStep
 from streamflow.persistence.loading_context import DefaultDatabaseLoadingContext
-from streamflow.workflow.token import TerminationToken, JobToken
+from streamflow.workflow.token import (
+    TerminationToken,
+    JobToken,
+)
 
 from streamflow.core.context import StreamFlowContext
 from streamflow.core.workflow import Workflow
@@ -185,11 +194,25 @@ class DefaultFailureManager(FailureManager):
         if self.retry_delay is not None:
             await asyncio.sleep(self.retry_delay)
         try:
-            new_workflow, loading_context = await self._recover_jobs(job, step)
-
+            new_workflow, loading_context = await self._recover_jobs(
+                job, step, add_failed_step=True
+            )
+            async with self.job_requests[job.name].lock:
+                new_job_token = get_job_token(
+                    job.name,
+                    new_workflow.steps[step.name].get_input_port("__job__").token_list,
+                )
+                if self.job_requests[job.name].job_token is not None:
+                    print(
+                        f"WARN WARN WARN job {job.name} ha già un job_token {self.job_requests[job.name].job_token.persistent_id}. Però qui non dovrebbe averne. Io volevo aggiungere job_token {new_job_token.persistent_id}."
+                    )
+                self.job_requests[job.name].job_token = new_job_token
             # get new job created by ScheduleStep
-            command_output = await self._execute_failed_job(
-                job, step, new_workflow, loading_context
+            # command_output = await self._execute_failed_job(
+            #     job, step, new_workflow, loading_context
+            # )
+            command_output = CommandOutput(
+                value=None, status=new_workflow.steps[step.name].status
             )
             # When receiving a FailureHandlingException, simply fail
         except FailureHandlingException as e:
@@ -365,7 +388,7 @@ class DefaultFailureManager(FailureManager):
                     await wr.context.scheduler.notify_status(
                         token.value.name, Status.ROLLBACK
                     )
-                    wr.context.scheduler.deallocate_from_job_name(
+                    wr.context.scheduler.deallocate_job(
                         token.value.name, keep_job_allocation=True
                     )
                 else:
@@ -407,13 +430,13 @@ class DefaultFailureManager(FailureManager):
         )
 
         dt = str(datetime.datetime.now()).replace(" ", "_").replace(":", ".")
-        dir_path = f"graphs/{dt}"
-        os.makedirs(dir_path)
+        dir_path = f"graphs/{dt}-{new_workflow.name}"
+        # os.makedirs(dir_path)
 
         tokens = list(failed_job.inputs.values())  # tokens to check
         tokens.append(job_token)
 
-        # todo: se la ritorna non torna più su, penso si vada in un loop continuo di:
+        # todo: se la risorsa non torna più su, penso si vada in un loop continuo di:
         #  - costruisco il dag
         #  - controllo che il file esiste
         #  - errore, test fallito perché la risorsa è giù
@@ -425,10 +448,10 @@ class DefaultFailureManager(FailureManager):
                 raise FailureHandlingException("Token has not a persistent_id")
             # se lo step è Transfer, allora non tutti gli input del job saranno nello step
             if k in failed_step.input_ports.keys():
-                dag[failed_step.get_input_port(k).name] = set((failed_step.name,))
+                dag[failed_step.get_input_port(k).name] = {failed_step.name}
             else:
                 print(f"Step {failed_step.name} has not the input port {k}")
-        dag[failed_step.get_input_port("__job__").name] = set((failed_step.name,))
+        dag[failed_step.get_input_port("__job__").name] = {failed_step.name}
 
         wr = WorkflowRecovery(
             context=workflow.context,
@@ -455,7 +478,13 @@ class DefaultFailureManager(FailureManager):
         wr.token_visited = get_necessary_tokens(wr.port_tokens, wr.token_visited)
         print("End sync-rollbacks")
 
+        # todo wr.inputs_ports non viene aggiornato
+        # if (set(wr.input_ports) - set(wr.dag_ports[INIT_DAG_FLAG])) or (set(wr.dag_ports[INIT_DAG_FLAG]) - set(wr.input_ports)):
+        #     pass
+
+        print()
         p, s = await wr.get_port_and_step_ids()
+        print()
 
         await _populate_workflow_lean(
             wr,
@@ -465,15 +494,9 @@ class DefaultFailureManager(FailureManager):
             new_workflow,
             loading_context,
         )
-        # await _populate_workflow(
-        #     failed_step,
-        #     wr.token_visited,
-        #     new_workflow,
-        #     loading_context,
-        #     wr.port_tokens,
-        #     wr.dag_ports,
-        #     workflow,
-        # )
+        if "/subworkflow/i1-back-propagation-transformer" in new_workflow.steps.keys():
+            pass
+            # raise FailureHandlingException("Caricata i1-back-prop CHE NON SERVE")
         print("end populate")
 
         if add_failed_step:
@@ -492,7 +515,7 @@ class DefaultFailureManager(FailureManager):
             for port in failed_step.get_input_ports().values():
                 if port.name not in new_workflow.ports.keys():
                     print(
-                        f"La input port {port.name} dello step fallito {failed_step.name} non è presente nel new_workflow {new_workflow.name} ... La aggiungo"
+                        f"WARNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN. La input port {port.name} dello step fallito {failed_step.name} non è presente nel new_workflow {new_workflow.name} ... La aggiungo"
                     )
                     new_workflow.add_port(
                         await Port.load(
@@ -517,16 +540,21 @@ class DefaultFailureManager(FailureManager):
         print("end _put_tokens")
 
         # for debug
-        print("New workflow", new_workflow.name, "popolato così:")
-        print("\tJobs da rieseguire:", job_executed_in_new_workflow)
-        # dag_workflow(new_workflow, dir_path + "/new-wf")
+        print(f"New workflow {new_workflow.name} popolato così:")
+        sorted_jobs = list(job_executed_in_new_workflow)
+        sorted_jobs.sort()
+        print(
+            f"\t{len(new_workflow.steps.keys())} steps e {len(new_workflow.ports.keys())} ports"
+        )
+        print(f"\tJobs da rieseguire: {sorted_jobs}")
+        dag_workflow(new_workflow, dir_path + "/new-wf")
         for step in new_workflow.steps.values():
             print(f"step {step.name} wf {step.workflow.name}")
             try:
                 print(
                     f"Step {step.name}\n\tinput ports",
                     {
-                        k_p: [(t.persistent_id, t.tag) for t in port.token_list]
+                        k_p: [(str_id(t), t.tag) for t in port.token_list]
                         for k_p, port in step.get_input_ports().items()
                     },
                     "\n\tkey-port_name",
@@ -536,11 +564,33 @@ class DefaultFailureManager(FailureManager):
                 print(f"exception {step.name} -> {e}")
                 raise
 
-        print(f"VIAAAAAAAAAAAAAA {new_workflow.name}")
+        # PROBLEMA: Ci sono troppi when-recovery step
+        if (
+            a := len(
+                [
+                    s
+                    for s in new_workflow.steps.values()
+                    if isinstance(
+                        s, (CWLLoopConditionalStep, CWLRecoveryLoopConditionalStep)
+                    )
+                ]
+            )
+        ) > 1:
+            raise FailureHandlingException(f"Ci sono troppi LoopConditionalStep: {a}")
 
+        # PROBLEMA: c'è uno step che non dovrebbe essere caricato
+        if "/subworkflow/i1-back-propagation-transformer" in new_workflow.steps.keys():
+            raise FailureHandlingException("Caricata i1-back-prop CHE NON SERVE")
+
+        # INFO: ci sarà una iterazione precedente
+        # "/subworkflow-loop-terminator" in new_workflow.steps.keys()
+        pass
+
+        print(f"VIAAAAAAAAAAAAAA {new_workflow.name}")
         await new_workflow.save(workflow.context)
         executor = StreamFlowExecutor(new_workflow)
         await executor.run()
+        print("executor.run", new_workflow.name, "terminated")
         return new_workflow, loading_context
 
     def is_valid_tag(self, workflow_name, tag, output_port):
@@ -640,6 +690,7 @@ class DefaultFailureManager(FailureManager):
         print("Finito " + new_workflow.name)
         return cmd_out
 
+    # deprecated
     async def get_valid_job_token(self, job_token):
         if job_token.value.name in self.job_requests.keys():
             async with self.job_requests[job_token.value.name].lock:
@@ -650,6 +701,33 @@ class DefaultFailureManager(FailureManager):
                 # return the valid job_token passed as parameter or that used in a rollback
                 return request.job_token
         return job_token
+
+    async def get_token(self, job_name, output_name):
+        if job_name not in self.job_requests.keys():
+            raise WorkflowExecutionException(
+                f"Job {job_name} was not rolled back. Unable to get token on port {output_name}"
+            )
+        async with self.job_requests[job_name].lock:
+            if (
+                self.job_requests[job_name].token_output is None
+                or output_name not in self.job_requests[job_name].token_output.keys()
+            ):
+                raise WorkflowExecutionException(
+                    f"Job rollback {job_name} has no token on port {output_name}"
+                )
+            return self.job_requests[job_name].token_output[output_name]
+
+    async def get_tokens(self, job_name):
+        if job_name not in self.job_requests.keys():
+            raise WorkflowExecutionException(
+                f"Job {job_name} was not rolled back. Unable to get tokens"
+            )
+        async with self.job_requests[job_name].lock:
+            if self.job_requests[job_name].token_output is None:
+                raise WorkflowExecutionException(
+                    f"Job rollback {job_name} has no tokens"
+                )
+            return self.job_requests[job_name].token_output
 
     async def close(self):
         pass
@@ -737,7 +815,9 @@ class DefaultFailureManager(FailureManager):
             self.job_requests[job.name].is_running = False
         return await self._do_handle_failure(job, step)
 
-    async def handle_failure_transfer(self, job: Job, step: Step, port_name: str):
+    async def handle_failure_transfer(
+        self, job: Job, step: Step, port_name: str
+    ) -> Token:
         if logger.isEnabledFor(logging.INFO):
             logger.info(
                 f"Handling {WorkflowTransferException.__name__} failure for job {job.name}"
@@ -752,7 +832,7 @@ class DefaultFailureManager(FailureManager):
             new_workflow, loading_context = await self._recover_jobs(
                 job, step, add_failed_step=True
             )
-            status = await self._execute_transfer_step(step, new_workflow, port_name)
+            token = await self._execute_transfer_step(step, new_workflow, port_name)
         # When receiving a FailureHandlingException, simply fail
         except FailureHandlingException as e:
             logger.exception(e)
@@ -765,8 +845,9 @@ class DefaultFailureManager(FailureManager):
             return await self.handle_failure_transfer(job, step, port_name)
         except Exception as e:
             logger.exception(e)
-            return await self.handle_exception(job, step, e)
-        return status
+            raise e
+            # return await self.handle_exception(job, step, e)
+        return token
 
     async def _execute_transfer_step(self, failed_step, new_workflow, port_name):
         token_list = (
