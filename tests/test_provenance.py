@@ -1,18 +1,11 @@
 from __future__ import annotations
 
-import asyncio
 import posixpath
 from typing import Any, MutableMapping, MutableSequence, cast, Type
 
 import pytest
 
-from streamflow.core import utils
-from streamflow.core.config import BindingConfig
-from streamflow.core.context import StreamFlowContext
-from streamflow.core.deployment import Target
-from streamflow.core.persistence import DatabaseLoadingContext
 from streamflow.core.utils import contains_id
-from streamflow.core.workflow import Port, Status, Step, Token, Workflow
 from streamflow.cwl.command import CWLCommand, CWLCommandToken
 from streamflow.cwl.translator import _create_command_output_processor_base
 from streamflow.persistence.loading_context import DefaultDatabaseLoadingContext
@@ -24,7 +17,7 @@ from streamflow.workflow.combinator import (
 )
 from streamflow.workflow.executor import StreamFlowExecutor
 
-from tests.conftest import get_docker_deployment_config, random_dir_path
+from tests.conftest import random_dir_path
 
 from streamflow.core import utils
 from streamflow.core.context import StreamFlowContext
@@ -90,31 +83,6 @@ async def _general_test(
     executor = StreamFlowExecutor(workflow)
     await executor.run()
     return step
-
-
-async def verify_dependency_tokens(
-    token,
-    port,
-    expected_depender,
-    expected_dependee,
-    context: StreamFlowContext,
-    alternative_expected_dependee=None,
-):
-    loading_context = DefaultDatabaseLoadingContext()
-
-    token_reloaded = await context.database.get_token(token_id=token.persistent_id)
-    assert token_reloaded["port"] == port.persistent_id
-
-    depender_list = await loading_context.load_next_tokens(context, token.persistent_id)
-    print(
-        "depender:",
-        {token.persistent_id: [t.persistent_id for t in depender_list]},
-    )
-    dependee_list = await loading_context.load_prev_tokens(context, token.persistent_id)
-    print(
-        "dependee:",
-        {token.persistent_id: [t.persistent_id for t in dependee_list]},
-    )
 
 
 def create_deploy_step(workflow, deployment_config=None):
