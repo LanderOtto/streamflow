@@ -214,7 +214,11 @@ class DefaultScheduler(Scheduler):
             return len(running_jobs) < location.slots
 
     async def _process_target(
-        self, target: Target, job_context: JobContext, hardware_requirement: Hardware
+        self,
+        target: Target,
+        job_context: JobContext,
+        hardware_requirement: Hardware,
+        workflow,
     ):
         deployment = target.deployment.name
         if deployment not in self.wait_queues:
@@ -229,11 +233,12 @@ class DefaultScheduler(Scheduler):
                     )
                     if logger.isEnabledFor(logging.DEBUG):
                         logger.debug(
-                            "Retrieving available locations for job {} on {}.".format(
+                            "Retrieving available locations for job {} on {} (wf {}).".format(
                                 job_context.job.name,
                                 posixpath.join(deployment, target.service)
                                 if target.service
                                 else deployment,
+                                workflow.name,
                             )
                         )
                     available_locations = dict(
@@ -260,12 +265,13 @@ class DefaultScheduler(Scheduler):
                     if valid_locations:
                         if logger.isEnabledFor(logging.DEBUG):
                             logger.debug(
-                                "Available locations for job {} on {} are {}.".format(
+                                "Available locations for job {} on {} are {}. (wf {})".format(
                                     job_context.job.name,
                                     posixpath.join(deployment, target.service)
                                     if target.service
                                     else deployment,
                                     list(valid_locations.keys()),
+                                    workflow.name,
                                 )
                             )
                         if target.scheduling_group is not None:
@@ -335,7 +341,7 @@ class DefaultScheduler(Scheduler):
                     else:
                         if logger.isEnabledFor(logging.DEBUG):
                             logger.debug(
-                                "No location available for job {} on deployment {}.{}".format(
+                                "No location available for job {} on deployment {}.{} (wf {})".format(
                                     job_context.job.name,
                                     posixpath.join(deployment, target.service)
                                     if target.service
@@ -343,6 +349,7 @@ class DefaultScheduler(Scheduler):
                                     f" Retry in {self.retry_interval} seconds"
                                     if self.retry_interval
                                     else "",
+                                    workflow.name,
                                 )
                             )
                 try:
@@ -358,7 +365,7 @@ class DefaultScheduler(Scheduler):
                         )
                         logger.debug(
                             f"No locations available for job {job_context.job.name} "
-                            f"in target {target_name}. Waiting {self.retry_interval} seconds."
+                            f"in target {target_name}. Waiting {self.retry_interval} seconds. (wf {workflow.name})"
                         )
 
     async def close(self):
@@ -386,7 +393,11 @@ class DefaultScheduler(Scheduler):
                             self.wait_queues[connector.deployment_name].notify_all()
 
     async def schedule(
-        self, job: Job, binding_config: BindingConfig, hardware_requirement: Hardware
+        self,
+        job: Job,
+        binding_config: BindingConfig,
+        hardware_requirement: Hardware,
+        workflow,
     ) -> None:
         job_context = JobContext(job)
         targets = list(binding_config.targets)
@@ -398,6 +409,7 @@ class DefaultScheduler(Scheduler):
                     target=target,
                     job_context=job_context,
                     hardware_requirement=hardware_requirement,
+                    workflow=workflow,
                 )
             )
             for target in targets
