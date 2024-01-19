@@ -6,7 +6,7 @@ import os
 import tempfile
 from typing import TYPE_CHECKING
 
-import pkg_resources
+from importlib_resources import files
 
 from streamflow.core import utils
 from streamflow.core.data import DataLocation
@@ -92,8 +92,11 @@ class DefaultCheckpointManager(CheckpointManager):
 
     @classmethod
     def get_schema(cls) -> str:
-        return pkg_resources.resource_filename(
-            __name__, os.path.join("schemas", "default_checkpoint_manager.json")
+        return (
+            files(__package__)
+            .joinpath("schemas")
+            .joinpath("default_checkpoint_manager.json")
+            .read_text("utf-8")
         )
 
 
@@ -103,8 +106,11 @@ class DummyCheckpointManager(CheckpointManager):
 
     @classmethod
     def get_schema(cls) -> str:
-        return pkg_resources.resource_filename(
-            __name__, os.path.join("schemas", "dummy_checkpoint_manager.json")
+        return (
+            files(__package__)
+            .joinpath("schemas")
+            .joinpath("dummy_checkpoint_manager.json")
+            .read_text("utf-8")
         )
 
     async def wait(self):

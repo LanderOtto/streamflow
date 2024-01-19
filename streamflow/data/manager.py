@@ -5,7 +5,7 @@ import os
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
-import pkg_resources
+from importlib_resources import files
 
 from streamflow.core.data import DataLocation, DataManager, DataType
 from streamflow.core.deployment import Connector, Location
@@ -78,8 +78,11 @@ class DefaultDataManager(DataManager):
 
     @classmethod
     def get_schema(cls) -> str:
-        return pkg_resources.resource_filename(
-            __name__, os.path.join("schemas", "data_manager.json")
+        return (
+            files(__package__)
+            .joinpath("schemas")
+            .joinpath("data_manager.json")
+            .read_text("utf-8")
         )
 
     def get_source_location(
@@ -141,6 +144,7 @@ class DefaultDataManager(DataManager):
             available=True,
         )
         self.path_mapper.put(path=path, data_location=data_location, recursive=True)
+        self.context.checkpoint_manager.register(data_location)
         return data_location
 
     def register_relation(
@@ -168,6 +172,14 @@ class DefaultDataManager(DataManager):
         # Create destination folder
         await remotepath.mkdir(dst_connector, dst_locations, str(Path(dst_path).parent))
         # Follow symlink for source path
+        await asyncio.gather(
+            *(
+                asyncio.create_task(src_data_loc.available.wait())
+                for src_data_loc in self.get_data_locations(
+                    src_path, src_location.deployment, src_location.name
+                )
+            )
+        )
         src_path = await remotepath.follow_symlink(
             self.context, src_connector, src_location, src_path
         )
@@ -182,6 +194,10 @@ class DefaultDataManager(DataManager):
                 if primary_loc.name == dst_location.name:
                     # Wait for the source location to be available on the destination path
                     await primary_loc.available.wait()
+
+                    # save data location of destination folder created
+                    self.register_path(dst_location, str(Path(dst_path).parent))
+
                     # If yes, perform a symbolic link if possible
                     if not writable:
                         await remotepath.symlink(
@@ -232,6 +248,10 @@ class DefaultDataManager(DataManager):
             # Otherwise, perform a remote copy and mark the destination as primary
             if not found_existing_loc:
                 remote_locations.append(dst_location)
+
+                # save data location of destination folder created
+                self.register_path(dst_location, str(Path(dst_path).parent))
+
                 if writable:
                     data_locations.append(
                         self.path_mapper.put(
@@ -329,7 +349,7 @@ class RemotePathMapper:
         for data_location in list(data_locations):
             self.put(data_location.path, dst_data_location)
             self.put(dst_path, data_location)
-        self.put(dst_path, dst_data_location, recursive=True)
+        self.put(dst_path, dst_data_location)
         return dst_data_location
 
     def get(
@@ -349,7 +369,7 @@ class RemotePathMapper:
         result = []
         for dep in [deployment] if deployment is not None else node.locations:
             for n in [name] if name is not None else node.locations.setdefault(dep, {}):
-                locations = node.locations[dep].setdefault(n, [])
+                locations = node.locations.setdefault(dep, {}).setdefault(n, [])
                 result.extend(
                     [
                         loc
@@ -364,12 +384,6 @@ class RemotePathMapper:
         node = self._filesystem
         for token in path.parts:
             node = node.children[token]
-
-        # todo: da migliorare.
-        #  - Per adesso vengono invalidate tutte le locations dalla radice fino a tutte le foglie interessate
-        #  - Alternativa: invalidare solo la radice, però poi è necessario
-        #       aggiustare il metodo di esplorazione dato che vengono creati dei link simbolici con
-        #       file che appartengono alla radice invalida
         for node_child in node.children.values():
             for data_loc in node_child.locations.setdefault(
                 location.deployment, {}

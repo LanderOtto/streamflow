@@ -10,7 +10,7 @@ from abc import abstractmethod
 from typing import MutableSequence, TYPE_CHECKING
 
 from streamflow.core import utils
-from streamflow.core.data import StreamWrapperContext
+from streamflow.core.data import StreamWrapperContextManager
 from streamflow.core.deployment import (
     Connector,
     LOCAL_LOCATION,
@@ -23,7 +23,7 @@ from streamflow.deployment.future import FutureAware
 from streamflow.deployment.stream import (
     StreamReaderWrapper,
     StreamWriterWrapper,
-    SubprocessStreamReaderWrapperContext,
+    SubprocessStreamReaderWrapperContextManager,
 )
 from streamflow.log_handler import logger
 
@@ -38,8 +38,11 @@ async def extract_tar_stream(
     transferBufferSize: int | None = None,
 ) -> None:
     async for member in tar:
+        # If `dst` is a directory, copy the content of `src` inside `dst`
         if os.path.isdir(dst) and member.path == posixpath.basename(src):
             await tar.extract(member, dst)
+
+        # Otherwise, if copying a file, simply move it inside `dst`
         elif member.isfile():
             async with await tar.extractfile(member) as inputfile:
                 path = os.path.normpath(
@@ -50,15 +53,19 @@ async def extract_tar_stream(
                 with open(path, "wb") as outputfile:
                     while content := await inputfile.read(transferBufferSize):
                         outputfile.write(content)
+
+        # Otherwise, if copying a directory, modify the member path to
+        # move all the file hierarchy inside `dst`
         else:
             member.path = posixpath.relpath(member.path, posixpath.basename(src))
-            await tar.extract(member, os.path.normpath(os.path.join(dst, member.path)))
+            await tar.extract(
+                member, os.path.normpath(os.path.join(dst, os.path.curdir))
+            )
 
 
 class BaseConnector(Connector, FutureAware):
     def __init__(self, deployment_name: str, config_dir: str, transferBufferSize: int):
-        super().__init__(deployment_name, config_dir)
-        self.transferBufferSize: int = transferBufferSize
+        super().__init__(deployment_name, config_dir, transferBufferSize)
 
     async def _copy_local_to_remote(
         self,
@@ -166,8 +173,8 @@ class BaseConnector(Connector, FutureAware):
                 )
             )
             # Open source StreamReader
-            async with source_connector._get_stream_reader(
-                source_location, src
+            async with (
+                await source_connector.get_stream_reader(source_location, src)
             ) as reader:
                 # Open a target StreamWriter for each location
                 writers = await asyncio.gather(
@@ -219,9 +226,11 @@ class BaseConnector(Connector, FutureAware):
     def _get_shell(self) -> str:
         return "sh"
 
-    def _get_stream_reader(self, location: Location, src: str) -> StreamWrapperContext:
+    async def get_stream_reader(
+        self, location: Location, src: str
+    ) -> StreamWrapperContextManager:
         dirname, basename = posixpath.split(src)
-        return SubprocessStreamReaderWrapperContext(
+        return SubprocessStreamReaderWrapperContextManager(
             coro=asyncio.create_subprocess_exec(
                 *shlex.split(
                     self._get_run_command(
@@ -266,6 +275,27 @@ class BaseConnector(Connector, FutureAware):
         await self._copy_local_to_remote(
             src=src, dst=dst, locations=locations, read_only=read_only
         )
+        if logger.isEnabledFor(logging.INFO):
+            if len(locations) > 1:
+                logger.info(
+                    "COMPLETED copy {src} on local file-system to {dst} on locations:\n\t{locations}".format(
+                        src=src,
+                        dst=dst,
+                        locations="\n\t".join([str(loc) for loc in locations]),
+                    )
+                )
+            else:
+                logger.info(
+                    "COMPLETED copy {src} on local file-system to {dst} {location}".format(
+                        src=src,
+                        dst=dst,
+                        location=(
+                            "on local file-system"
+                            if locations[0].name == LOCAL_LOCATION
+                            else f"on location {locations[0]}"
+                        ),
+                    )
+                )
 
     async def copy_remote_to_local(
         self,
@@ -283,6 +313,10 @@ class BaseConnector(Connector, FutureAware):
         await self._copy_remote_to_local(
             src=src, dst=dst, location=locations[0], read_only=read_only
         )
+        if logger.isEnabledFor(logging.INFO):
+            logger.info(
+                f"COMPLETED copy {src} on location {locations[0]} to {dst} on local file-system"
+            )
 
     async def copy_remote_to_remote(
         self,
@@ -320,6 +354,25 @@ class BaseConnector(Connector, FutureAware):
             source_connector=source_connector,
             read_only=read_only,
         )
+        if logger.isEnabledFor(logging.INFO):
+            if len(locations) > 1:
+                logger.info(
+                    "COMPLETED copy {src} on location {src_loc} to {dst} on locations:\n\t{locations}".format(
+                        src_loc=source_location,
+                        src=src,
+                        dst=dst,
+                        locations="\n\t".join([str(loc) for loc in locations]),
+                    )
+                )
+            else:
+                logger.info(
+                    "COMPLETED copy {src} on location {src_loc} to {dst} on location {location}".format(
+                        src_loc=source_location,
+                        src=src,
+                        dst=dst,
+                        location=locations[0],
+                    )
+                )
 
     async def run(
         self,

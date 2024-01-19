@@ -14,6 +14,7 @@ from streamflow.core.context import SchemaEntity
 from streamflow.core.persistence import DatabaseLoadingContext, PersistableEntity
 
 if TYPE_CHECKING:
+    from streamflow.core.data import StreamWrapperContextManager
     from streamflow.core.context import StreamFlowContext
     from streamflow.core.scheduling import AvailableLocation
     from streamflow.core.workflow import Job
@@ -66,9 +67,10 @@ class BindingFilter(SchemaEntity):
 
 
 class Connector(SchemaEntity):
-    def __init__(self, deployment_name: str, config_dir: str):
+    def __init__(self, deployment_name: str, config_dir: str, transferBufferSize: int):
         self.deployment_name: str = deployment_name
         self.config_dir: str = config_dir
+        self.transferBufferSize: int = transferBufferSize
 
     @abstractmethod
     async def copy_local_to_remote(
@@ -136,6 +138,12 @@ class Connector(SchemaEntity):
     async def undeploy(self, external: bool) -> None:
         ...
 
+    @abstractmethod
+    async def get_stream_reader(
+        self, location: Location, src: str
+    ) -> StreamWrapperContextManager:
+        ...
+
 
 class DeploymentManager(SchemaEntity):
     def __init__(self, context: StreamFlowContext) -> None:
@@ -162,7 +170,7 @@ class DeploymentManager(SchemaEntity):
         ...
 
 
-class DeploymentConfig(Config):
+class DeploymentConfig(Config, PersistableEntity):
     __slots__ = ("name", "type", "config", "external", "lazy", "workdir", "wraps")
 
     def __init__(
@@ -175,7 +183,8 @@ class DeploymentConfig(Config):
         workdir: str | None = None,
         wraps: str | None = None,
     ) -> None:
-        super().__init__(name, type, config)
+        Config.__init__(self, name, type, config)
+        PersistableEntity.__init__(self)
         self.external: bool = external
         self.lazy: bool = lazy
         self.workdir: str | None = workdir
@@ -197,7 +206,6 @@ class DeploymentConfig(Config):
             lazy=row["lazy"],
             workdir=row["workdir"],
         )
-        obj.persistent_id = persistent_id
         loading_context.add_deployment(persistent_id, obj)
         return obj
 
@@ -267,7 +275,6 @@ class Target(PersistableEntity):
         row = await context.database.get_target(persistent_id)
         type = cast(Type[Target], utils.get_class_from_name(row["type"]))
         obj = await type._load(context, row, loading_context)
-        obj.persistent_id = persistent_id
         loading_context.add_target(persistent_id, obj)
         return obj
 
@@ -307,5 +314,36 @@ class LocalTarget(Target):
         context: StreamFlowContext,
         row: MutableMapping[str, Any],
         loading_context: DatabaseLoadingContext,
-    ) -> Target:
+    ) -> LocalTarget:
         return cls(workdir=row["workdir"])
+
+
+class FilterConfig(Config, PersistableEntity):
+    def __init__(self, name: str, type: str, config: MutableMapping[str, Any]):
+        Config.__init__(self, name, type, config)
+        PersistableEntity.__init__(self)
+
+    @classmethod
+    async def load(
+        cls,
+        context: StreamFlowContext,
+        persistent_id: int,
+        loading_context: DatabaseLoadingContext,
+    ) -> FilterConfig:
+        row = await context.database.get_filter(persistent_id)
+        obj = cls(
+            name=row["name"],
+            type=row["type"],
+            config=json.loads(row["config"]),
+        )
+        loading_context.add_filter(persistent_id, obj)
+        return obj
+
+    async def save(self, context: StreamFlowContext) -> None:
+        async with self.persistence_lock:
+            if not self.persistent_id:
+                self.persistent_id = await context.database.add_filter(
+                    name=self.name,
+                    type=self.type,
+                    config=json.dumps(self.config),
+                )

@@ -570,8 +570,8 @@ class RunCrateProvenanceManager(ProvenanceManager, ABC):
         dst = file.get("dst", posixpath.sep)
         dst_parent = posixpath.dirname(posixpath.normpath(dst))
         if src in self.files_map:
-            if logger.isEnabledFor(logging.WARN):
-                logger.warn(f"File {src} is already present in the archive.")
+            if logger.isEnabledFor(logging.WARNING):
+                logger.warning(f"File {src} is already present in the archive.")
         else:
             if os.path.isfile(os.path.realpath(src)):
                 checksum = _file_checksum(
@@ -679,9 +679,9 @@ class RunCrateProvenanceManager(ProvenanceManager, ABC):
                     f"Token `{k}` of key `{key}` does not exist in archive manifest."
                 )
             current_obj = current_obj[k]
-        if logger.isEnabledFor(logging.WARN):
+        if logger.isEnabledFor(logging.WARNING):
             if keys[-1] in current_obj:
-                logger.warn(
+                logger.warning(
                     f"Key {key} already exists in archive manifest and will be overridden."
                 )
         value = ESCAPED_EQUAL.sub("=", value)
@@ -782,28 +782,28 @@ class RunCrateProvenanceManager(ProvenanceManager, ABC):
                 # Add CreateActions
                 create_actions = []
                 if step := workflow.steps.get(step_name):
-                    for command in await self.context.database.get_commands_by_step(
+                    for execution in await self.context.database.get_executions_by_step(
                         step.persistent_id
                     ):
                         create_action = {
                             "@id": "#" + str(uuid.uuid4()),
                             "@type": "CreateAction",
                             "actionStatus": _get_action_status(
-                                Status(command["status"])
+                                Status(execution["status"])
                             ),
                             "endTime": streamflow.core.utils.get_date_from_ns(
-                                command["end_time"]
+                                execution["end_time"]
                             ),
                             "instrument": {"@id": jsonld_step["workExample"]["@id"]},
                             "name": f"Run of workflow/{jsonld_step['@id']}",
                             "startTime": streamflow.core.utils.get_date_from_ns(
-                                command["start_time"]
+                                execution["start_time"]
                             ),
                         }
                         self.graph[create_action["@id"]] = create_action
                         self.create_action_map.setdefault(wf_id, {}).setdefault(
                             jsonld_step["workExample"]["@id"], {}
-                        ).setdefault(step_name, {})[command["tag"]] = create_action
+                        ).setdefault(step_name, {})[execution["tag"]] = create_action
                         create_actions.append(create_action)
                 # Add ControlAction
                 if create_actions:
@@ -889,7 +889,7 @@ class RunCrateProvenanceManager(ProvenanceManager, ABC):
                     if dst not in archive.namelist():
                         archive.write(src, dst)
                 else:
-                    logger.warn(f"File {src} does not exist.")
+                    logger.warning(f"File {src} does not exist.")
         print(f"Successfully created run_crate archive at {path}")
 
     @abstractmethod

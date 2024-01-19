@@ -8,13 +8,17 @@ from typing import Any, MutableMapping, MutableSequence, TYPE_CHECKING
 from streamflow.core.context import SchemaEntity, StreamFlowContext
 
 if TYPE_CHECKING:
-    from streamflow.core.deployment import DeploymentConfig, Target
+    from streamflow.core.deployment import DeploymentConfig, Target, FilterConfig
     from streamflow.core.workflow import Port, Step, Token, Workflow
 
 
 class DatabaseLoadingContext(ABC):
     @abstractmethod
     def add_deployment(self, persistent_id: int, deployment: DeploymentConfig):
+        ...
+
+    @abstractmethod
+    def add_filter(self, persistent_id: int, filter_config: FilterConfig):
         ...
 
     @abstractmethod
@@ -39,6 +43,10 @@ class DatabaseLoadingContext(ABC):
 
     @abstractmethod
     async def load_deployment(self, context: StreamFlowContext, persistent_id: int):
+        ...
+
+    @abstractmethod
+    async def load_filter(self, context: StreamFlowContext, persistent_id: int):
         ...
 
     @abstractmethod
@@ -100,10 +108,6 @@ class Database(SchemaEntity):
         self.context: StreamFlowContext = context
 
     @abstractmethod
-    async def add_command(self, step_id: int, tag: str, cmd: str) -> int:
-        ...
-
-    @abstractmethod
     async def add_dependency(
         self, step: int, port: int, type: DependencyType, name: str
     ) -> None:
@@ -118,6 +122,19 @@ class Database(SchemaEntity):
         external: bool,
         lazy: bool,
         workdir: str | None,
+    ) -> int:
+        ...
+
+    @abstractmethod
+    async def add_execution(self, step_id: int, tag: str, cmd: str) -> int:
+        ...
+
+    @abstractmethod
+    async def add_filter(
+        self,
+        name: str,
+        type: str,
+        config: str,
     ) -> int:
         ...
 
@@ -187,17 +204,21 @@ class Database(SchemaEntity):
         ...
 
     @abstractmethod
-    async def get_command(self, command_id: int) -> MutableMapping[str, Any]:
+    async def get_deployment(self, deployment_id: int) -> MutableMapping[str, Any]:
         ...
 
     @abstractmethod
-    async def get_commands_by_step(
+    async def get_execution(self, execution_id: int) -> MutableMapping[str, Any]:
+        ...
+
+    @abstractmethod
+    async def get_executions_by_step(
         self, step_id: int
     ) -> MutableSequence[MutableMapping[str, Any]]:
         ...
 
     @abstractmethod
-    async def get_deployment(self, deplyoment_id: int) -> MutableMapping[str, Any]:
+    async def get_filter(self, filter_id: int) -> MutableMapping[str, Any]:
         ...
 
     @abstractmethod
@@ -282,14 +303,20 @@ class Database(SchemaEntity):
         ...
 
     @abstractmethod
-    async def update_command(
-        self, command_id: int, updates: MutableMapping[str, Any]
+    async def update_deployment(
+        self, deployment_id: int, updates: MutableMapping[str, Any]
     ) -> int:
         ...
 
     @abstractmethod
-    async def update_deployment(
-        self, deployment_id: int, updates: MutableMapping[str, Any]
+    async def update_execution(
+        self, execution_id: int, updates: MutableMapping[str, Any]
+    ) -> int:
+        ...
+
+    @abstractmethod
+    async def update_filter(
+        self, filter_id: int, updates: MutableMapping[str, Any]
     ) -> int:
         ...
 

@@ -552,11 +552,11 @@ def _create_token_processor(
                         schema_def_types=schema_def_types,
                         format_graph=format_graph,
                         context=context,
-                        optional=optional,
                         check_type=check_type,
                         force_deep_listing=force_deep_listing,
                         only_propagate_secondary_files=only_propagate_secondary_files,
                     ),
+                    optional=optional,
                 )
             # Enum type: -> create output processor
             elif port_type["type"] == "enum":
@@ -615,6 +615,7 @@ def _create_token_processor(
                         )
                         for port_type in port_type["fields"]
                     },
+                    optional=optional,
                 )
             # Unknown type -> raise Exception
             else:
@@ -1534,8 +1535,8 @@ class CWLTranslator:
                     )
                 # Otherwise, throw a warning and skip the DockerRequirement conversion
                 else:
-                    if logger.isEnabledFor(logging.WARN):
-                        logger.warn(
+                    if logger.isEnabledFor(logging.WARNING):
+                        logger.warning(
                             f"Skipping DockerRequirement conversion for step `{name_prefix}` "
                             f"when executing on `{target.deployment.name}` deployment."
                         )
@@ -2363,7 +2364,7 @@ class CWLTranslator:
                 processor=_create_token_processor(
                     port_name=port_name,
                     workflow=workflow,
-                    port_type=element_input.get("type", "Any"),
+                    port_type="Any",
                     cwl_element=element_input,
                     cwl_name_prefix=posixpath.join(cwl_step_name, port_name),
                     schema_def_types=schema_def_types,

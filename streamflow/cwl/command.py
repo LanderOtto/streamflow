@@ -53,7 +53,6 @@ from streamflow.deployment.connector import LocalConnector
 from streamflow.deployment.utils import get_path_processor
 from streamflow.log_handler import logger
 from streamflow.workflow.step import ExecuteStep
-from streamflow.workflow.utils import get_job_token
 
 
 def _adjust_cwl_output(base_path: str, path_processor: ModuleType, value: Any) -> Any:
@@ -780,7 +779,7 @@ class CWLCommand(CWLBaseCommand):
                 )
             )
         # Persist command
-        command_id = await self.step.workflow.context.database.add_command(
+        execution_id = await self.step.workflow.context.database.add_execution(
             step_id=self.step.persistent_id,
             tag=get_tag(job.inputs.values()),
             cmd=cmd_string,
@@ -829,7 +828,7 @@ class CWLCommand(CWLBaseCommand):
             else stdout
         )
         # Get timeout
-        timeout = self._get_timeout(job)
+        timeout = self._get_timeout(job=job)
         # Execute remote command
         start_time = time.time_ns()
         result, exit_code = await connector.run(
@@ -856,11 +855,10 @@ class CWLCommand(CWLBaseCommand):
         else:
             status = Status.FAILED
         # Update command persistence
-        await self.step.workflow.context.database.update_command(
-            command_id,
+        await self.step.workflow.context.database.update_execution(
+            execution_id,
             {
                 "status": status.value,
-                "output": str(result),
                 "start_time": start_time,
                 "end_time": end_time,
             },
@@ -1246,7 +1244,7 @@ class CWLExpressionCommand(CWLBaseCommand):
                 f"Evaluating expression for step {self.step.name} (job {job.name})"
             )
         # Persist command
-        command_id = await self.step.workflow.context.database.add_command(
+        execution_id = await self.step.workflow.context.database.add_execution(
             step_id=self.step.persistent_id,
             tag=get_tag(job.inputs.values()),
             cmd=self.expression,
@@ -1261,11 +1259,10 @@ class CWLExpressionCommand(CWLBaseCommand):
         )
         end_time = time.time_ns()
         # Update command persistence
-        await self.step.workflow.context.database.update_command(
-            command_id,
+        await self.step.workflow.context.database.update_execution(
+            execution_id,
             {
                 "status": Status.COMPLETED.value,
-                "output": str(result),
                 "start_time": start_time,
                 "end_time": end_time,
             },

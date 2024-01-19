@@ -1,10 +1,9 @@
 from __future__ import annotations
-
 import asyncio
 from typing import MutableMapping
 
 from streamflow.core.context import StreamFlowContext
-from streamflow.core.deployment import DeploymentConfig, Target
+from streamflow.core.deployment import DeploymentConfig, Target, FilterConfig
 from streamflow.core.persistence import DatabaseLoadingContext
 from streamflow.core.workflow import Port, Step, Token, Workflow, Status
 
@@ -16,12 +15,17 @@ class DefaultDatabaseLoadingContext(DatabaseLoadingContext):
         self._ports: MutableMapping[int, Port] = {}
         self._steps: MutableMapping[int, Step] = {}
         self._targets: MutableMapping[int, Target] = {}
+        self._filter_configs: MutableMapping[int, FilterConfig] = {}
         self._tokens: MutableMapping[int, Token] = {}
         self._workflows: MutableMapping[int, Workflow] = {}
 
     def add_deployment(self, persistent_id: int, deployment: DeploymentConfig):
         deployment.persistent_id = persistent_id
         self._deployment_configs[persistent_id] = deployment
+
+    def add_filter(self, persistent_id: int, filter_config: FilterConfig):
+        filter_config.persistent_id = persistent_id
+        self._filter_configs[persistent_id] = filter_config
 
     def add_port(self, persistent_id: int, port: Port):
         port.persistent_id = persistent_id
@@ -47,6 +51,11 @@ class DefaultDatabaseLoadingContext(DatabaseLoadingContext):
         return self._deployment_configs.get(
             persistent_id
         ) or await DeploymentConfig.load(context, persistent_id, self)
+
+    async def load_filter(self, context: StreamFlowContext, persistent_id: int):
+        return self._filter_configs.get(persistent_id) or await FilterConfig.load(
+            context, persistent_id, self
+        )
 
     async def load_port(self, context: StreamFlowContext, persistent_id: int):
         return self._ports.get(persistent_id) or await Port.load(
@@ -113,7 +122,7 @@ class WorkflowBuilder(DefaultDatabaseLoadingContext):
             step_row = await context.database.get_step(persistent_id)
             if (step := self.workflow.steps.get(step_row["name"])) is None:
                 # If the step is not available in the new workflow, a new one must be created
-                self.add_workflow(step_row['workflow'], self.workflow)
+                self.add_workflow(step_row["workflow"], self.workflow)
                 step = await Step.load(context, persistent_id, self)
 
                 # restore initial step state
@@ -130,7 +139,7 @@ class WorkflowBuilder(DefaultDatabaseLoadingContext):
             port_row = await context.database.get_port(persistent_id)
             if (port := self.workflow.ports.get(port_row["name"])) is None:
                 # If the port is not available in the new workflow, a new one must be created
-                self.add_workflow(port_row['workflow'], self.workflow)
+                self.add_workflow(port_row["workflow"], self.workflow)
                 port = await Port.load(context, persistent_id, self)
                 self.workflow.ports[port.name] = port
             return port

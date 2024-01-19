@@ -22,9 +22,9 @@ from typing import (
     cast,
 )
 
-import pkg_resources
 import yaml
 from cachetools import Cache, TTLCache
+from importlib_resources import files
 from kubernetes_asyncio import client
 from kubernetes_asyncio.client import ApiClient, Configuration, V1Container, V1PodList
 from kubernetes_asyncio.config import (
@@ -37,7 +37,7 @@ from kubernetes_asyncio.utils import create_from_yaml
 
 from streamflow.core import utils
 from streamflow.core.asyncache import cachedmethod
-from streamflow.core.data import StreamWrapperContext
+from streamflow.core.data import StreamWrapperContextManager
 from streamflow.core.deployment import Connector, Location
 from streamflow.core.exception import (
     WorkflowDefinitionException,
@@ -138,7 +138,7 @@ class KubernetesResponseWrapper(BaseStreamWrapper):
         await self.stream.send_bytes(payload)
 
 
-class KubernetesResponseWrapperContext(StreamWrapperContext):
+class KubernetesResponseWrapperContextManager(StreamWrapperContextManager):
     def __init__(self, coro: Coroutine):
         self.coro: Coroutine = coro
         self.response: KubernetesResponseWrapper | None = None
@@ -188,8 +188,8 @@ class BaseKubernetesConnector(BaseConnector, ABC):
         if cacheSize is None:
             cacheSize = resourcesCacheSize
             if cacheSize is not None:
-                if logger.isEnabledFor(logging.WARN):
-                    logger.warn(
+                if logger.isEnabledFor(logging.WARNING):
+                    logger.warning(
                         "The `resourcesCacheSize` keyword is deprecated and will be removed in StreamFlow 0.3.0. "
                         "Use `locationsCacheSize` instead."
                     )
@@ -199,8 +199,8 @@ class BaseKubernetesConnector(BaseConnector, ABC):
         if cacheTTL is None:
             cacheTTL = resourcesCacheTTL
             if cacheTTL is not None:
-                if logger.isEnabledFor(logging.WARN):
-                    logger.warn(
+                if logger.isEnabledFor(logging.WARNING):
+                    logger.warning(
                         "The `resourcesCacheTTL` keyword is deprecated and will be removed in StreamFlow 0.3.0. "
                         "Use `locationsCacheTTL` instead."
                     )
@@ -270,7 +270,7 @@ class BaseKubernetesConnector(BaseConnector, ABC):
     async def _copy_remote_to_local(
         self, src: str, dst: str, location: Location, read_only: bool = False
     ):
-        async with self._get_stream_reader(location, src) as reader:
+        async with (await self.get_stream_reader(location, src)) as reader:
             try:
                 async with aiotarstream.open(
                     stream=reader,
@@ -311,8 +311,8 @@ class BaseKubernetesConnector(BaseConnector, ABC):
                     dst=dst,
                 )
             )
-            async with source_connector._get_stream_reader(
-                source_location, src
+            async with (
+                await source_connector.get_stream_reader(source_location, src)
             ) as reader:
                 # Open a target response for each location
                 writers = [
@@ -428,10 +428,12 @@ class BaseKubernetesConnector(BaseConnector, ABC):
     async def _get_running_pods(self) -> V1PodList:
         ...
 
-    def _get_stream_reader(self, location: Location, src: str) -> StreamWrapperContext:
+    async def get_stream_reader(
+        self, location: Location, src: str
+    ) -> StreamWrapperContextManager:
         pod, container = location.name.split(":")
         dirname, basename = posixpath.split(src)
-        return KubernetesResponseWrapperContext(
+        return KubernetesResponseWrapperContextManager(
             coro=cast(
                 Coroutine,
                 self.client_ws.connect_get_namespaced_pod_exec(
@@ -852,8 +854,11 @@ class KubernetesConnector(BaseKubernetesConnector):
 
     @classmethod
     def get_schema(cls) -> str:
-        return pkg_resources.resource_filename(
-            __name__, os.path.join("schemas", "kubernetes.json")
+        return (
+            files(__package__)
+            .joinpath("schemas")
+            .joinpath("kubernetes.json")
+            .read_text("utf-8")
         )
 
     async def undeploy(self, external: bool) -> None:
@@ -1056,8 +1061,11 @@ class Helm3Connector(BaseKubernetesConnector):
 
     @classmethod
     def get_schema(cls) -> str:
-        return pkg_resources.resource_filename(
-            __name__, os.path.join("schemas", "helm3.json")
+        return (
+            files(__package__)
+            .joinpath("schemas")
+            .joinpath("helm3.json")
+            .read_text("utf-8")
         )
 
     async def undeploy(self, external: bool) -> None:

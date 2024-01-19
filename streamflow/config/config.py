@@ -41,8 +41,8 @@ class WorkflowConfig(Config):
         if not self.deployments:
             self.deployments = config.get("models", {})
             if self.deployments:
-                if logger.isEnabledFor(logging.WARN):
-                    logger.warn(
+                if logger.isEnabledFor(logging.WARNING):
+                    logger.warning(
                         "The `models` keyword is deprecated and will be removed in StreamFlow 0.3.0. "
                         "Use `deployments` instead."
                     )

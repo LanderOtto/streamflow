@@ -5,7 +5,7 @@ import logging
 import os
 from typing import TYPE_CHECKING
 
-import pkg_resources
+from importlib_resources import files
 
 from streamflow.core.deployment import (
     Connector,
@@ -146,8 +146,8 @@ class DefaultDeploymentManager(DeploymentManager):
         # If it is not a ConnectorWrapper, do nothing
         else:
             if deployment_config.wraps is not None:
-                if logger.isEnabledFor(logging.WARN):
-                    logger.warn(
+                if logger.isEnabledFor(logging.WARNING):
+                    logger.warning(
                         f"The `wraps` directive has no effect on deployment {deployment_config.name}, "
                         f"as the `{deployment_config.type}` connector does not inherit from the ConnectorWrapper class."
                     )
@@ -166,8 +166,11 @@ class DefaultDeploymentManager(DeploymentManager):
 
     @classmethod
     def get_schema(cls) -> str:
-        return pkg_resources.resource_filename(
-            __name__, os.path.join("schemas", "deployment_manager.json")
+        return (
+            files(__package__)
+            .joinpath("schemas")
+            .joinpath("deployment_manager.json")
+            .read_text("utf-8")
         )
 
     async def undeploy(self, deployment_name: str) -> None:

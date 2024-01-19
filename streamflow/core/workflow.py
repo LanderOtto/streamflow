@@ -442,6 +442,7 @@ class Step(PersistableEntity, ABC):
         ]
         loading_context.add_step(persistent_id, step)
         input_deps = await context.database.get_input_ports(persistent_id)
+        loading_context.add_step(persistent_id, step)
         input_ports = await asyncio.gather(
             *(
                 asyncio.create_task(loading_context.load_port(context, d["port"]))

@@ -166,7 +166,7 @@ class CWLTokenProcessor(TokenProcessor):
                 format_graph.parse(data=row["format_graph"])
                 if row["format_graph"] is not None
                 else None
-            ),
+            ),  # todo: fix multiple instances
             full_js=row["full_js"],
             load_contents=row["load_contents"],
             load_listing=LoadListing(row["load_listing"])
@@ -303,7 +303,9 @@ class CWLTokenProcessor(TokenProcessor):
                 "expression_lib": self.expression_lib,
                 "file_format": self.file_format,
                 "format_graph": (
-                    self.format_graph.serialize() if self.format_graph else None
+                    self.format_graph.serialize()
+                    if self.format_graph is not None
+                    else None
                 ),
                 "full_js": self.full_js,
                 "load_contents": self.load_contents,
@@ -525,32 +527,33 @@ class CWLCommandOutputProcessor(CommandOutputProcessor):
                     globpath if isinstance(globpath, MutableSequence) else [globpath]
                 )
                 for path in globpath:
-                    # todo: add asyncio.create_task ?
                     resolve_tasks.append(
-                        utils.expand_glob(
-                            connector=connector,
-                            workflow=self.workflow,
-                            location=location,
-                            input_directory=(
-                                self.target.workdir
-                                if self.target
-                                else job.input_directory
-                            ),
-                            output_directory=(
-                                self.target.workdir
-                                if self.target
-                                else job.output_directory
-                            ),
-                            tmp_directory=(
-                                self.target.workdir
-                                if self.target
-                                else job.tmp_directory
-                            ),
-                            path=(
-                                path_processor.join(output_directory, path)
-                                if not path_processor.isabs(path)
-                                else path
-                            ),
+                        asyncio.create_task(
+                            utils.expand_glob(
+                                connector=connector,
+                                workflow=self.workflow,
+                                location=location,
+                                input_directory=(
+                                    self.target.workdir
+                                    if self.target
+                                    else job.input_directory
+                                ),
+                                output_directory=(
+                                    self.target.workdir
+                                    if self.target
+                                    else job.output_directory
+                                ),
+                                tmp_directory=(
+                                    self.target.workdir
+                                    if self.target
+                                    else job.tmp_directory
+                                ),
+                                path=(
+                                    path_processor.join(output_directory, path)
+                                    if not path_processor.isabs(path)
+                                    else path
+                                ),
+                            )
                         )
                     )
             paths, effective_paths = [
@@ -711,9 +714,16 @@ class CWLCommandOutputProcessor(CommandOutputProcessor):
 
 
 class CWLMapTokenProcessor(TokenProcessor):
-    def __init__(self, name: str, workflow: Workflow, processor: TokenProcessor):
+    def __init__(
+        self,
+        name: str,
+        workflow: Workflow,
+        processor: TokenProcessor,
+        optional: bool = False,
+    ):
         super().__init__(name, workflow)
         self.processor: TokenProcessor = processor
+        self.optional: bool = optional
 
     @classmethod
     async def _load(
@@ -728,18 +738,28 @@ class CWLMapTokenProcessor(TokenProcessor):
             processor=await TokenProcessor.load(
                 context, row["processor"], loading_context
             ),
+            optional=row["optional"],
         )
 
     async def _save_additional_params(self, context: StreamFlowContext):
         return {
             **await super()._save_additional_params(context),
-            **{"processor": await self.processor.save(context)},
+            **{
+                "processor": await self.processor.save(context),
+                "optional": self.optional,
+            },
         }
 
     async def process(self, inputs: MutableMapping[str, Token], token: Token) -> Token:
         # If value is token, propagate the process call
         if isinstance(token.value, Token):
             return token.update(await self.process(inputs, token.value))
+        # Check if value is None
+        if token.value is None:
+            if self.optional:
+                return token.update(token.value)
+            else:
+                raise WorkflowExecutionException(f"Token {self.name} is not optional.")
         # Check if token value is a list
         if not isinstance(token, ListToken):
             raise WorkflowDefinitionException(
@@ -834,9 +854,11 @@ class CWLObjectTokenProcessor(TokenProcessor):
         name: str,
         workflow: Workflow,
         processors: MutableMapping[str, TokenProcessor],
+        optional: bool = False,
     ):
         super().__init__(name, workflow)
         self.processors: MutableMapping[str, TokenProcessor] = processors
+        self.optional: bool = optional
 
     @classmethod
     async def _load(
@@ -862,6 +884,7 @@ class CWLObjectTokenProcessor(TokenProcessor):
                     ),
                 )
             },
+            optional=row["optional"],
         )
 
     async def _save_additional_params(self, context: StreamFlowContext):
@@ -879,7 +902,8 @@ class CWLObjectTokenProcessor(TokenProcessor):
                             )
                         ),
                     )
-                }
+                },
+                "optional": self.optional,
             },
         }
 
@@ -887,6 +911,12 @@ class CWLObjectTokenProcessor(TokenProcessor):
         # If value is token, propagate the process call
         if isinstance(token.value, Token):
             return token.update(await self.process(inputs, token.value))
+        # Check if value is None
+        if token.value is None:
+            if self.optional:
+                return token.update(token.value)
+            else:
+                raise WorkflowExecutionException(f"Token {self.name} is not optional.")
         # Check if token value is a dictionary
         if not isinstance(token.value, MutableMapping):
             raise WorkflowDefinitionException(

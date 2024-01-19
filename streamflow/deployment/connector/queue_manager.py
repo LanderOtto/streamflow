@@ -11,7 +11,7 @@ from functools import partial
 from typing import Any, MutableMapping, MutableSequence, cast
 
 import cachetools
-import pkg_resources
+from importlib_resources import files
 
 from streamflow.core import utils
 from streamflow.core.asyncache import cachedmethod
@@ -340,8 +340,8 @@ class QueueManagerConnector(ConnectorWrapper, ABC):
     ) -> None:
         self._inner_ssh_connector: bool = False
         if hostname is not None:
-            if logger.isEnabledFor(logging.WARN):
-                logger.warn(
+            if logger.isEnabledFor(logging.WARNING):
+                logger.warning(
                     "Inline SSH options are deprecated and will be removed in StreamFlow 0.3.0. "
                     f"Define a standalone `SSHConnector` and link the `{self.__class__.__name__}` "
                     "to it using the `wraps` property."
@@ -361,7 +361,7 @@ class QueueManagerConnector(ConnectorWrapper, ABC):
                 transferBufferSize=transferBufferSize,
                 username=username,
             )
-        super().__init__(deployment_name, config_dir, connector)
+        super().__init__(deployment_name, config_dir, connector, transferBufferSize)
         files_map: MutableMapping[str, Any] = {}
         self.services = (
             {k: self._service_class(**v) for k, v in services.items()}
@@ -374,8 +374,8 @@ class QueueManagerConnector(ConnectorWrapper, ABC):
                     with open(os.path.join(self.config_dir, service.file)) as f:
                         files_map[name] = f.read()
         if file is not None:
-            if logger.isEnabledFor(logging.WARN):
-                logger.warn(
+            if logger.isEnabledFor(logging.WARNING):
+                logger.warning(
                     "The `file` keyword is deprecated and will be removed in StreamFlow 0.3.0. "
                     "Use `services` instead."
                 )
@@ -389,6 +389,13 @@ class QueueManagerConnector(ConnectorWrapper, ABC):
                 template_map=files_map,
             )
         self.maxConcurrentJobs: int = maxConcurrentJobs
+        if self.maxConcurrentJobs == 1:
+            if logger.isEnabledFor(logging.WARNING):
+                logger.warning(
+                    "The `maxConcurrentJobs` parameter is set to the default value 1, which prevents "
+                    "multiple jobs to be concurrently submitted to the queue manager. Consider raising "
+                    "this value to improve performance."
+                )
         self.pollingInterval: int = pollingInterval
         self.scheduledJobs: MutableSequence[str] = []
         self.jobsCache: cachetools.Cache = cachetools.TTLCache(
@@ -500,6 +507,13 @@ class QueueManagerConnector(ConnectorWrapper, ABC):
                     )
                 )
             command = utils.encode_command(command)
+            if logger.isEnabledFor(logging.WARNING):
+                if not self.template_map.is_empty() and location.service is None:
+                    logger.warning(
+                        f"Deployment {self.deployment_name} contains some service definitions, "
+                        f"but none of them has been specified to execute job {job_name}. Execution "
+                        f"will fall back to the default template."
+                    )
             command = self.template_map.get_command(
                 command=command,
                 template=location.service,
@@ -553,12 +567,12 @@ class QueueManagerConnector(ConnectorWrapper, ABC):
         self.scheduledJobs = {}
         if self._inner_ssh_connector:
             if logger.isEnabledFor(logging.INFO):
-                logger.warn(
+                logger.warning(
                     f"UNDEPLOYING inner SSH connector for {self.deployment_name} deployment."
                 )
             await self.connector.undeploy(external)
             if logger.isEnabledFor(logging.INFO):
-                logger.warn(
+                logger.warning(
                     f"COMPLETED Undeployment of inner SSH connector for {self.deployment_name} deployment."
                 )
 
@@ -566,8 +580,11 @@ class QueueManagerConnector(ConnectorWrapper, ABC):
 class SlurmConnector(QueueManagerConnector):
     @classmethod
     def get_schema(cls) -> str:
-        return pkg_resources.resource_filename(
-            __name__, os.path.join("schemas", "slurm.json")
+        return (
+            files(__package__)
+            .joinpath("schemas")
+            .joinpath("slurm.json")
+            .read_text("utf-8")
         )
 
     async def _get_output(self, job_id: str, location: Location) -> str:
@@ -616,7 +633,12 @@ class SlurmConnector(QueueManagerConnector):
             command=command,
             capture_output=True,
         )
-        return int(stdout.strip())
+        try:
+            return int(stdout.strip())
+        except ValueError:
+            raise WorkflowExecutionException(
+                f"Error while retrieving return code for job {job_id}: {stdout.strip()}"
+            )
 
     @cachedmethod(
         lambda self: self.jobsCache,
@@ -802,8 +824,11 @@ class SlurmConnector(QueueManagerConnector):
 class PBSConnector(QueueManagerConnector):
     @classmethod
     def get_schema(cls) -> str:
-        return pkg_resources.resource_filename(
-            __name__, os.path.join("schemas", "pbs.json")
+        return (
+            files(__package__)
+            .joinpath("schemas")
+            .joinpath("pbs.json")
+            .read_text("utf-8")
         )
 
     async def _get_output(self, job_id: str, location: Location) -> str:
@@ -958,8 +983,11 @@ class PBSConnector(QueueManagerConnector):
 class FluxConnector(QueueManagerConnector):
     @classmethod
     def get_schema(cls) -> str:
-        return pkg_resources.resource_filename(
-            __name__, os.path.join("schemas", "flux.json")
+        return (
+            files(__package__)
+            .joinpath("schemas")
+            .joinpath("flux.json")
+            .read_text("utf-8")
         )
 
     async def _get_output(self, job_id: str, location: Location) -> str:
@@ -1001,7 +1029,12 @@ class FluxConnector(QueueManagerConnector):
             command=command,
             capture_output=True,
         )
-        return int(stdout.strip())
+        try:
+            return int(stdout.strip())
+        except ValueError:
+            raise WorkflowExecutionException(
+                f"Error while retrieving return code for job {job_id}: {stdout.strip()}"
+            )
 
     @cachedmethod(
         lambda self: self.jobsCache,

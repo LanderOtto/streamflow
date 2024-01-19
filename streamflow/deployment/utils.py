@@ -8,7 +8,12 @@ from types import ModuleType
 from typing import TYPE_CHECKING
 
 from streamflow.core.config import BindingConfig
-from streamflow.core.deployment import DeploymentConfig, LocalTarget, Target
+from streamflow.core.deployment import (
+    DeploymentConfig,
+    LocalTarget,
+    Target,
+    FilterConfig,
+)
 from streamflow.deployment.connector import LocalConnector
 from streamflow.log_handler import logger
 
@@ -30,8 +35,8 @@ def get_binding_config(
                 target_deployment = workflow_config.deployments[target["deployment"]]
             else:
                 target_deployment = workflow_config.deployments[target["model"]]
-                if logger.isEnabledFor(logging.WARN):
-                    logger.warn(
+                if logger.isEnabledFor(logging.WARNING):
+                    logger.warning(
                         "The `model` keyword is deprecated and will be removed in StreamFlow 0.3.0. "
                         "Use `deployment` instead."
                     )
@@ -39,8 +44,8 @@ def get_binding_config(
             if locations is None:
                 locations = target.get("resources")
                 if locations is not None:
-                    if logger.isEnabledFor(logging.WARN):
-                        logger.warn(
+                    if logger.isEnabledFor(logging.WARNING):
+                        logger.warning(
                             "The `resources` keyword is deprecated and will be removed in StreamFlow 0.3.0. "
                             "Use `locations` instead."
                         )
@@ -63,7 +68,13 @@ def get_binding_config(
                     workdir=workdir,
                 )
             )
-        return BindingConfig(targets=targets, filters=config.get("filters"))
+        return BindingConfig(
+            targets=targets,
+            filters=[
+                FilterConfig(name=c.name, type=c.type, config=c.config)
+                for c in config.get("filters")
+            ],
+        )
     else:
         return BindingConfig(targets=[LocalTarget()])
 

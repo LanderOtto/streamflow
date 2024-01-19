@@ -19,12 +19,10 @@ from streamflow.core.deployment import (
 from streamflow.core.scheduling import AvailableLocation, Hardware
 from streamflow.core.workflow import Job, Status
 from streamflow.deployment.connector import LocalConnector
-from tests.conftest import (
-    random_dir_path,
-    random_job_names,
-    get_deployment_config,
+from tests.utils.deployment import (
     get_docker_deployment_config,
     get_service,
+    get_deployment_config,
 )
 
 
@@ -134,12 +132,12 @@ async def test_single_env_few_resources(context: StreamFlowContext):
     for _ in range(2):
         jobs.append(
             Job(
-                name=random_job_names()[0],
+                name=utils.random_name(),
                 workflow_id=0,
                 inputs={},
-                input_directory=random_dir_path(),
-                output_directory=random_dir_path(),
-                tmp_directory=random_dir_path(),
+                input_directory=utils.random_name(),
+                output_directory=utils.random_name(),
+                tmp_directory=utils.random_name(),
             )
         )
     hardware_requirement = Hardware(cores=1)
@@ -209,12 +207,12 @@ async def test_single_env_enough_resources(context: StreamFlowContext):
     for _ in range(2):
         jobs.append(
             Job(
-                name=random_job_names()[0],
+                name=utils.random_name(),
                 workflow_id=0,
                 inputs={},
-                input_directory=random_dir_path(),
-                output_directory=random_dir_path(),
-                tmp_directory=random_dir_path(),
+                input_directory=utils.random_name(),
+                output_directory=utils.random_name(),
+                tmp_directory=utils.random_name(),
             )
         )
     hardware_requirement = Hardware(cores=1)
@@ -273,12 +271,12 @@ async def test_multi_env(context: StreamFlowContext):
         jobs.append(
             (
                 Job(
-                    name=random_job_names()[0],
+                    name=utils.random_name(),
                     workflow_id=0,
                     inputs={},
-                    input_directory=random_dir_path(),
-                    output_directory=random_dir_path(),
-                    tmp_directory=random_dir_path(),
+                    input_directory=utils.random_name(),
+                    output_directory=utils.random_name(),
+                    tmp_directory=utils.random_name(),
                 ),
                 BindingConfig(targets=[local_target] if i == 0 else [docker_target]),
             )
@@ -327,12 +325,12 @@ async def test_multi_targets_one_job(context: StreamFlowContext):
 
     # Create fake job with two targets and schedule it
     job = Job(
-        name=random_job_names()[0],
+        name=utils.random_name(),
         workflow_id=0,
         inputs={},
-        input_directory=random_dir_path(),
-        output_directory=random_dir_path(),
-        tmp_directory=random_dir_path(),
+        input_directory=utils.random_name(),
+        output_directory=utils.random_name(),
+        tmp_directory=utils.random_name(),
     )
     local_target = LocalTarget()
     docker_target = Target(
@@ -394,12 +392,12 @@ async def test_multi_targets_two_jobs(context: StreamFlowContext):
     for _ in range(2):
         jobs.append(
             Job(
-                name=random_job_names()[0],
+                name=utils.random_name(),
                 workflow_id=0,
                 inputs={},
-                input_directory=random_dir_path(),
-                output_directory=random_dir_path(),
-                tmp_directory=random_dir_path(),
+                input_directory=utils.random_name(),
+                output_directory=utils.random_name(),
+                tmp_directory=utils.random_name(),
             )
         )
     local_target = LocalTarget()
@@ -452,12 +450,12 @@ async def test_multi_targets_two_jobs(context: StreamFlowContext):
 async def test_binding_filter(context: StreamFlowContext):
     """Test Binding Filter using a job with two targets both free. With the CustomBindingFilter the scheduling will choose the second target"""
     job = Job(
-        name=random_job_names()[0],
+        name=utils.random_name(),
         workflow_id=0,
         inputs={},
-        input_directory=random_dir_path(),
-        output_directory=random_dir_path(),
-        tmp_directory=random_dir_path(),
+        input_directory=utils.random_name(),
+        output_directory=utils.random_name(),
+        tmp_directory=utils.random_name(),
     )
     local_target = LocalTarget()
     docker_target = Target(

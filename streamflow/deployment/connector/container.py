@@ -10,8 +10,8 @@ from abc import ABC, abstractmethod
 from shutil import which
 from typing import Any, MutableMapping, MutableSequence
 
-import pkg_resources
 from cachetools import Cache, TTLCache
+from importlib_resources import files
 
 from streamflow.core import utils
 from streamflow.core.asyncache import cachedmethod
@@ -122,8 +122,8 @@ class ContainerConnector(BaseConnector, ABC):
         if cacheSize is None:
             cacheSize = resourcesCacheSize
             if cacheSize is not None:
-                if logger.isEnabledFor(logging.WARN):
-                    logger.warn(
+                if logger.isEnabledFor(logging.WARNING):
+                    logger.warning(
                         "The `resourcesCacheSize` keyword is deprecated and will be removed in StreamFlow 0.3.0. "
                         "Use `locationsCacheSize` instead."
                     )
@@ -133,8 +133,8 @@ class ContainerConnector(BaseConnector, ABC):
         if cacheTTL is None:
             cacheTTL = resourcesCacheTTL
             if cacheTTL is not None:
-                if logger.isEnabledFor(logging.WARN):
-                    logger.warn(
+                if logger.isEnabledFor(logging.WARNING):
+                    logger.warning(
                         "The `resourcesCacheTTL` keyword is deprecated and will be removed in StreamFlow 0.3.0. "
                         "Use `locationsCacheTTL` instead."
                     )
@@ -343,8 +343,14 @@ class DockerBaseConnector(ContainerConnector, ABC):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, _ = await proc.communicate()
-        return json.loads(stdout.decode().strip()) if stdout else []
+        stdout, stderr = await proc.communicate()
+        try:
+            return json.loads(stdout.decode().strip()) if stdout else []
+        except json.decoder.JSONDecodeError:
+            raise WorkflowExecutionException(
+                f"Error retrieving volumes for Docker container {location.name}: "
+                f"{stderr.decode().strip()}"
+            )
 
 
 class DockerConnector(DockerBaseConnector):
@@ -684,8 +690,11 @@ class DockerConnector(DockerBaseConnector):
 
     @classmethod
     def get_schema(cls) -> str:
-        return pkg_resources.resource_filename(
-            __name__, os.path.join("schemas", "docker.json")
+        return (
+            files(__package__)
+            .joinpath("schemas")
+            .joinpath("docker.json")
+            .read_text("utf-8")
         )
 
     async def undeploy(self, external: bool) -> None:
@@ -867,8 +876,11 @@ class DockerComposeConnector(DockerBaseConnector):
 
     @classmethod
     def get_schema(cls) -> str:
-        return pkg_resources.resource_filename(
-            __name__, os.path.join("schemas", "docker-compose.json")
+        return (
+            files(__package__)
+            .joinpath("schemas")
+            .joinpath("docker-compose.json")
+            .read_text("utf-8")
         )
 
     async def undeploy(self, external: bool) -> None:
@@ -1186,8 +1198,11 @@ class SingularityConnector(ContainerConnector):
 
     @classmethod
     def get_schema(cls) -> str:
-        return pkg_resources.resource_filename(
-            __name__, os.path.join("schemas", "singularity.json")
+        return (
+            files(__package__)
+            .joinpath("schemas")
+            .joinpath("singularity.json")
+            .read_text("utf-8")
         )
 
     async def undeploy(self, external: bool) -> None:

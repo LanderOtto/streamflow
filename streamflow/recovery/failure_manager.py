@@ -6,7 +6,7 @@ import asyncio
 import logging
 from typing import MutableMapping, MutableSequence
 
-import pkg_resources
+from importlib_resources import files
 
 from streamflow.core.context import StreamFlowContext
 from streamflow.core.recovery import FailureManager
@@ -267,8 +267,11 @@ class DefaultFailureManager(FailureManager):
 
     @classmethod
     def get_schema(cls) -> str:
-        return pkg_resources.resource_filename(
-            __name__, os.path.join("schemas", "default_failure_manager.json")
+        return (
+            files(__package__)
+            .joinpath("schemas")
+            .joinpath("default_failure_manager.json")
+            .read_text("utf-8")
         )
 
     async def _do_handle_failure(self, job: Job, step: Step) -> CommandOutput:
@@ -385,8 +388,11 @@ class DummyFailureManager(FailureManager):
 
     @classmethod
     def get_schema(cls) -> str:
-        return pkg_resources.resource_filename(
-            __name__, os.path.join("schemas", "dummy_failure_manager.json")
+        return (
+            files(__package__)
+            .joinpath("schemas")
+            .joinpath("dummy_failure_manager.json")
+            .read_text("utf-8")
         )
 
     async def handle_exception(

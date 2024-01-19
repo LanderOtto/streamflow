@@ -19,6 +19,7 @@ from typing import (
 from streamflow.core import utils
 from streamflow.core.config import BindingConfig
 from streamflow.core.context import StreamFlowContext
+from streamflow.core.data import DataType
 from streamflow.core.deployment import Connector, DeploymentConfig, Location, Target
 from streamflow.core.exception import (
     FailureHandlingException,
@@ -111,7 +112,7 @@ class BaseStep(Step, ABC):
                 ),
             )
         }
-
+        # debug
         if len({t.tag for t in inputs.values()}) != 1:
             raise Exception("Input hanno tag diversi")
 
@@ -499,10 +500,7 @@ class DeployStep(BaseStep):
             ),
             connector_port=cast(
                 ConnectorPort,
-                await loading_context.load_port(
-                    context,
-                    params["connector_port"],
-                ),
+                await loading_context.load_port(context, params["connector_port"]),
             ),
         )
 
@@ -609,11 +607,7 @@ class ExecuteStep(BaseStep):
             name=row["name"],
             workflow=await loading_context.load_workflow(context, row["workflow"]),
             job_port=cast(
-                JobPort,
-                await loading_context.load_port(
-                    context,
-                    params["job_port"],
-                ),
+                JobPort, await loading_context.load_port(context, params["job_port"])
             ),
         )
         step.output_connectors = params["output_connectors"]
@@ -1024,6 +1018,7 @@ class InputInjectorStep(BaseStep, ABC):
                 key_port, token = next(
                     iter((await self._get_inputs(input_ports)).items())
                 )
+                # Save workflow input
                 if not token.persistent_id:
                     await token.save(
                         self.workflow.context,
@@ -1043,11 +1038,9 @@ class InputInjectorStep(BaseStep, ABC):
                     in_list = [
                         get_job_token(
                             job.name, self.get_input_port("__job__").token_list
-                        )
+                        ),
+                        token,
                     ]
-                    # if token.persistent is none it means it comes from the dataset
-                    if token.persistent_id:
-                        in_list.append(token)
                     # Process value and inject token in the output port
                     new_token = await self.process_input(job, token.value)
                     self.workflow.context.checkpoint_manager.save_data(new_token)
@@ -1145,10 +1138,10 @@ class LoopCombinatorStep(CombinatorStep):
                             self.combinator.combine(task_name, token),
                         ):
                             ins = [id for t in schema.values() for id in t["input_ids"]]
-                            for port_name, out_token in schema.items():
+                            for port_name, token in schema.items():
                                 self.get_output_port(port_name).put(
                                     await self._persist_token(
-                                        token=out_token["token"],
+                                        token=token["token"],
                                         port=self.get_output_port(port_name),
                                         input_token_ids=ins,
                                     )
@@ -1310,15 +1303,11 @@ class ScheduleStep(BaseStep):
                 context, params["binding_config"], loading_context
             ),
             connector_ports={
-                k: cast(
-                    ConnectorPort,
-                    await loading_context.load_port(context, v),
-                )
+                k: cast(ConnectorPort, await loading_context.load_port(context, v))
                 for k, v in params["connector_ports"].items()
             },
             job_port=cast(
-                JobPort,
-                await loading_context.load_port(context, params["job_port"]),
+                JobPort, await loading_context.load_port(context, params["job_port"])
             ),
             job_prefix=params["job_prefix"],
             hardware_requirement=hardware_requirement,
@@ -1350,16 +1339,31 @@ class ScheduleStep(BaseStep):
         )
         # Register paths
         for location in locations:
-            for directory in [
+            for directory in (
                 job.input_directory,
                 job.output_directory,
                 job.tmp_directory,
-            ]:
-                self.workflow.context.data_manager.register_path(
-                    location=location,
-                    path=directory,
-                    relpath=directory,
-                )
+            ):
+                if not self.workflow.context.data_manager.get_data_locations(
+                    directory, location.deployment, location.name
+                ):
+                    realpath = await remotepath.follow_symlink(
+                        self.workflow.context, connector, location, directory
+                    )
+                    if realpath != directory:
+                        self.workflow.context.data_manager.register_path(
+                            location=location,
+                            path=realpath,
+                            relpath=realpath,
+                        )
+                    self.workflow.context.data_manager.register_path(
+                        location=location,
+                        path=directory,
+                        relpath=directory,
+                        data_type=DataType.PRIMARY
+                        if realpath == directory
+                        else DataType.SYMBOLIC_LINK,
+                    )
         # Propagate job
         token_inputs = []
         for step_port_name in self.input_ports.keys():
@@ -1444,6 +1448,7 @@ class ScheduleStep(BaseStep):
                     for tag in list(inputs_map.keys()):
                         if len(inputs_map[tag]) == len(input_ports):
                             inputs = inputs_map.pop(tag)
+                            # debug
                             job_name = posixpath.join(self.job_prefix, tag)
                             if (
                                 job_alloc := self.workflow.context.scheduler.job_allocations.get(
@@ -1455,7 +1460,7 @@ class ScheduleStep(BaseStep):
                                 )
                             # Create Job
                             job = Job(
-                                name=job_name,
+                                name=posixpath.join(self.job_prefix, tag),
                                 workflow_id=self.workflow.persistent_id,
                                 inputs=inputs,
                                 input_directory=self.input_directory,
@@ -1608,8 +1613,7 @@ class TransferStep(BaseStep, ABC):
             name=row["name"],
             workflow=await loading_context.load_workflow(context, row["workflow"]),
             job_port=cast(
-                JobPort,
-                await loading_context.load_port(context, params["job_port"]),
+                JobPort, await loading_context.load_port(context, params["job_port"])
             ),
         )
 

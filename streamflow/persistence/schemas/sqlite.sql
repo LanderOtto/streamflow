@@ -43,13 +43,12 @@ CREATE TABLE IF NOT EXISTS dependency
 );
 
 
-CREATE TABLE IF NOT EXISTS command
+CREATE TABLE IF NOT EXISTS execution
 (
     id         INTEGER PRIMARY KEY,
     step       INTEGER,
     tag        TEXT,
     cmd        TEXT,
-    output     BLOB,
     status     INTEGER,
     start_time INTEGER,
     end_time   INTEGER,
@@ -100,4 +99,13 @@ CREATE TABLE IF NOT EXISTS target
     workdir    TEXT,
     params     TEXT,
     FOREIGN KEY (deployment) REFERENCES deployment (id)
+);
+
+
+CREATE TABLE IF NOT EXISTS filter
+(
+    id              INTEGER PRIMARY KEY,
+    name            TEXT,
+    type            TEXT,
+    config          TEXT
 );

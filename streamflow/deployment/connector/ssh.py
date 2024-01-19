@@ -10,13 +10,13 @@ from pathlib import PurePosixPath
 from typing import Any, MutableMapping, MutableSequence
 
 import asyncssh
-import pkg_resources
 from asyncssh import ChannelOpenError
 from cachetools import Cache, LRUCache
+from importlib_resources import files
 
 from streamflow.core import utils
 from streamflow.core.asyncache import cachedmethod
-from streamflow.core.data import StreamWrapperContext
+from streamflow.core.data import StreamWrapperContextManager
 from streamflow.core.deployment import Connector, Location
 from streamflow.core.exception import WorkflowExecutionException
 from streamflow.core.scheduling import AvailableLocation, Hardware
@@ -54,10 +54,21 @@ class SSHContext:
         if self._ssh_connection is None:
             if not self._connecting:
                 self._connecting = True
-                self._ssh_connection = await self._get_connection(self._config)
+                try:
+                    self._ssh_connection = await self._get_connection(self._config)
+                except ConnectionError as e:
+                    logger.exception(
+                        f"Impossible to connect to {self._config.hostname}: {e}"
+                    )
+                    self.close()
+                    raise
                 self._connect_event.set()
             else:
                 await self._connect_event.wait()
+                if self._ssh_connection is None:
+                    raise WorkflowExecutionException(
+                        f"Impossible to connect to {self._config.hostname}"
+                    )
         return self._ssh_connection
 
     def get_hostname(self) -> str:
@@ -103,9 +114,13 @@ class SSHContext:
         with open(file_path) as f:
             return f.read().strip()
 
-    async def close(self):
+    def close(self):
+        self._connecting = False
         if self._ssh_connection is not None:
             self._ssh_connection.close()
+            self._ssh_connection = None
+        if self._connect_event.is_set():
+            self._connect_event.clear()
 
     def full(self) -> bool:
         if self._ssh_connection:
@@ -185,8 +200,9 @@ class SSHContextFactory:
             for _ in range(max_connections)
         ]
 
-    async def close(self):
-        await asyncio.gather(*(asyncio.create_task(c.close()) for c in self._contexts))
+    def close(self):
+        for c in self._contexts:
+            c.close()
 
     def get(
         self,
@@ -207,7 +223,7 @@ class SSHContextFactory:
         )
 
 
-class SSHStreamWrapperContext(StreamWrapperContext):
+class SSHStreamWrapperContextManager(StreamWrapperContextManager):
     def __init__(self, src: str, ssh_context_factory: SSHContextFactory):
         super().__init__()
         self.src: str = src
@@ -283,8 +299,8 @@ class SSHConnector(BaseConnector):
                 with open(os.path.join(self.config_dir, service)) as f:
                     services_map[name] = f.read()
         if file is not None:
-            if logger.isEnabledFor(logging.WARN):
-                logger.warn(
+            if logger.isEnabledFor(logging.WARNING):
+                logger.warning(
                     "The `file` keyword is deprecated and will be removed in StreamFlow 0.3.0. "
                     "Use `services` instead."
                 )
@@ -400,8 +416,8 @@ class SSHConnector(BaseConnector):
                 locations[i : i + rounds] for i in range(0, len(locations), rounds)
             ]
             for location_group in location_groups:
-                async with source_connector._get_stream_reader(
-                    source_location, src
+                async with (
+                    await source_connector.get_stream_reader(source_location, src)
                 ) as reader:
                     async with contextlib.AsyncExitStack() as exit_stack:
                         # Open a target StreamWriter for each location
@@ -625,7 +641,9 @@ class SSHConnector(BaseConnector):
             encoding=encoding,
         )
 
-    def _get_stream_reader(self, location: Location, src: str) -> StreamWrapperContext:
+    async def get_stream_reader(
+        self, location: Location, src: str
+    ) -> StreamWrapperContextManager:
         if self.dataTransferConfig:
             if location not in self.data_transfer_context_factories:
                 self.data_transfer_context_factories[location.name] = SSHContextFactory(
@@ -644,7 +662,9 @@ class SSHConnector(BaseConnector):
                     max_connections=self.maxConnections,
                 )
             ssh_context_factory = self.ssh_context_factories[location.name]
-        return SSHStreamWrapperContext(src=src, ssh_context_factory=ssh_context_factory)
+        return SSHStreamWrapperContextManager(
+            src=src, ssh_context_factory=ssh_context_factory
+        )
 
     async def deploy(self, external: bool) -> None:
         pass
@@ -686,8 +706,11 @@ class SSHConnector(BaseConnector):
 
     @classmethod
     def get_schema(cls) -> str:
-        return pkg_resources.resource_filename(
-            __name__, os.path.join("schemas", "ssh.json")
+        return (
+            files(__package__)
+            .joinpath("schemas")
+            .joinpath("ssh.json")
+            .read_text("utf-8")
         )
 
     async def run(
@@ -714,6 +737,13 @@ class SSHConnector(BaseConnector):
             job_name=job_name,
         )
         if job_name is not None:
+            if logger.isEnabledFor(logging.WARNING):
+                if not self.template_map.is_empty() and location.service is None:
+                    logger.warning(
+                        f"Deployment {self.deployment_name} contains some service definitions, "
+                        f"but none of them has been specified to execute job {job_name}. Execution "
+                        f"will fall back to the default template."
+                    )
             command = self.template_map.get_command(
                 command=command,
                 template=location.service,
@@ -738,8 +768,8 @@ class SSHConnector(BaseConnector):
 
     async def undeploy(self, external: bool) -> None:
         for ssh_context in self.ssh_context_factories.values():
-            await ssh_context.close()
+            ssh_context.close()
         self.ssh_context_factories = {}
         for ssh_context in self.data_transfer_context_factories.values():
-            await ssh_context.close()
+            ssh_context.close()
         self.data_transfer_context_factories = {}

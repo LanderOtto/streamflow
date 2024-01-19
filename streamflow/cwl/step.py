@@ -183,7 +183,6 @@ class CWLLoopConditionalStep(CWLConditionalStep):
                 f"on inputs {[t.tag for t in inputs.values()]}"
             )
         # Next iteration: propagate outputs to the loop
-        # todo: add this class in provenance tests
         for port_name, port in self.get_output_ports().items():
             port.put(
                 await self._persist_token(
@@ -206,62 +205,6 @@ class CWLLoopConditionalStep(CWLConditionalStep):
                 f"Step {self.name} (wf {self.workflow.name}) add IterationTerminationToken({get_tag(inputs.values())}) in port {[k for k, v in self.skip_ports.items() if v == port.name].pop()} (name {port.name})"
             )
             port.put(IterationTerminationToken(tag=get_tag(inputs.values())))
-
-
-class CWLRecoveryLoopConditionalStep(CWLLoopConditionalStep):
-    def __init__(
-        self,
-        name: str,
-        workflow: Workflow,
-        expression: str,
-        expression_lib: MutableSequence[str] | None = None,
-        full_js: bool = False,
-        index: int = 0,
-    ):
-        super().__init__(name, workflow, expression, expression_lib, full_js)
-        self.index = index
-
-    async def _eval(self, inputs: MutableMapping[str, Token]):
-        context = utils.build_context(
-            {"index": Token(value=self.index, tag=get_tag(inputs.values()))}
-        )
-        condition = utils.eval_expression(
-            expression=self.expression,
-            context=context,
-            full_js=self.full_js,
-            expression_lib=self.expression_lib,
-        )
-        if condition is True or condition is False:
-            self.index += 1
-            return condition
-        else:
-            raise WorkflowDefinitionException(
-                "Conditional 'when' must evaluate to 'true' or 'false'"
-            )
-
-    async def _on_false(self, inputs: MutableMapping[str, Token]) -> None:
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(
-                f"Step {self.name} (wf {self.workflow.name}) condition evaluated false "
-                f"on inputs {[t.tag for t in inputs.values()]}"
-            )
-        # Loop termination: propagate outputs outside the loop
-        logger.info(f"Step {self.name} skip ports {self.skip_ports}")
-        for port_name in self.skip_ports.values():
-            if port_name in self.workflow.ports.keys():
-                self.workflow.ports[port_name].put(
-                    IterationTerminationToken(tag=get_tag(inputs.values()))
-                )
-
-    # def get_skip_ports(self) -> MutableMapping[str, Port]:
-    #     return {
-    #         k: self.workflow.ports[v]
-    #         for k, v in self.skip_ports.items()
-    #         if v in self.workflow.ports.keys()
-    #     }
-    #
-    # def unsafe_add_skip_port(self, dependency_name, port_name):
-    #     self.skip_ports[dependency_name] = port_name
 
 
 class CWLEmptyScatterConditionalStep(CWLBaseConditionalStep):
@@ -518,11 +461,6 @@ class CWLTransferStep(TransferStep):
                 job.input_directory, utils.random_name(), selected_location.relpath
             )
             # Perform and transfer
-            for loc in dst_locations:
-                if await remotepath.exists(connector, loc, filepath):
-                    raise WorkflowExecutionException(
-                        f"File {filepath} is already available on location {loc}"
-                    )
             await self.workflow.context.data_manager.transfer_data(
                 src_location=selected_location,
                 src_path=selected_location.path,
@@ -589,11 +527,13 @@ class CWLTransferStep(TransferStep):
                 # Check secondary files
                 if "secondaryFiles" in token_value:
                     new_token_value["secondaryFiles"] = await asyncio.gather(
-                        *(  # todo: add asyncio.create_task ?
-                            self._update_file_token(
-                                job=job,
-                                token_value=element,
-                                dest_path=path_processor.dirname(filepath),
+                        *(
+                            asyncio.create_task(
+                                self._update_file_token(
+                                    job=job,
+                                    token_value=element,
+                                    dest_path=path_processor.dirname(filepath),
+                                )
                             )
                             for element in token_value["secondaryFiles"]
                         )
@@ -646,18 +586,9 @@ class CWLTransferStep(TransferStep):
                 "checksum" in token_value
                 and new_token_value["checksum"] != token_value["checksum"]
             ):
-                loc = self.workflow.context.data_manager.get_data_locations(
-                    path=token_value["path"], data_type=DataType.PRIMARY
-                )
-                new_loc = self.workflow.context.data_manager.get_data_locations(
-                    path=new_token_value["path"], data_type=DataType.PRIMARY
-                )
-                raise WorkflowTransferException(
-                    "Error transferring file {} in location {} to {} in location {}.".format(
-                        token_value["path"],
-                        loc[0] if loc else "Unreachable-location",
-                        new_token_value["path"],
-                        new_loc[0] if new_loc else "Unreachable-location",
+                raise WorkflowExecutionException(
+                    "Error creating file {} with path {} in locations {}.".format(
+                        token_value["path"], new_token_value["path"], dst_locations
                     )
                 )
 

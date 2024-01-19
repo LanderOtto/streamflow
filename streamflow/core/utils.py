@@ -17,7 +17,6 @@ from typing import (
     TYPE_CHECKING,
     Collection,
 )
-
 from streamflow.core.exception import WorkflowExecutionException
 from streamflow.core.persistence import PersistableEntity, DatabaseLoadingContext
 
