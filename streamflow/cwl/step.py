@@ -503,7 +503,8 @@ class CWLTransferStep(TransferStep):
                         )
                         if checksum != original_checksum:
                             raise WorkflowTransferException(
-                                "Error transferring file {} in location {} to {} in location {}".format(
+                                "Step {} error transferring file {} in location {} to {} in location {}".format(
+                                    self.name,
                                     selected_location.path,
                                     selected_location.name,
                                     filepath,
@@ -586,9 +587,9 @@ class CWLTransferStep(TransferStep):
                 "checksum" in token_value
                 and new_token_value["checksum"] != token_value["checksum"]
             ):
-                raise WorkflowExecutionException(
-                    "Error creating file {} with path {} in locations {}.".format(
-                        token_value["path"], new_token_value["path"], dst_locations
+                raise WorkflowTransferException(
+                    "Step {} error creating file {} with path {} in locations {}.".format(
+                        self.name, token_value["path"], new_token_value["path"], [l.name for l in dst_locations]
                     )
                 )
 

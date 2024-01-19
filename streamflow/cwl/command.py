@@ -53,6 +53,7 @@ from streamflow.deployment.connector import LocalConnector
 from streamflow.deployment.utils import get_path_processor
 from streamflow.log_handler import logger
 from streamflow.workflow.step import ExecuteStep
+from streamflow.workflow.utils import get_job_token
 
 
 def _adjust_cwl_output(base_path: str, path_processor: ModuleType, value: Any) -> Any:
