@@ -31,7 +31,9 @@ class CachedDatabase(Database, ABC):
         self.target_cache: Cache = LRUCache(
             maxsize=max_size, getsizeof=wrapper_get_size
         )
-        self.filter_cache: Cache = LRUCache(maxsize=sys.maxsize, getsizeof=wrapper_get_size)
+        self.filter_cache: Cache = LRUCache(
+            maxsize=sys.maxsize, getsizeof=wrapper_get_size
+        )
         self.token_cache: Cache = LRUCache(maxsize=max_size, getsizeof=wrapper_get_size)
         self.workflow_cache: Cache = LRUCache(
             maxsize=max_size, getsizeof=wrapper_get_size
