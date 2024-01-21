@@ -18,10 +18,9 @@ from typing import (
     Collection,
 )
 from streamflow.core.exception import WorkflowExecutionException
-from streamflow.core.persistence import PersistableEntity, DatabaseLoadingContext
+from streamflow.core.persistence import PersistableEntity
 
 if TYPE_CHECKING:
-    from streamflow.core.context import StreamFlowContext
     from streamflow.core.deployment import Connector, Location
     from streamflow.core.workflow import Token
     from typing import Iterable
@@ -317,31 +316,6 @@ def get_job_tag(job_name) -> int:
 
 def get_job_root_name(job_name) -> str:
     return os.path.dirname(job_name)
-
-
-async def get_dependencies(
-    dependency_rows: MutableSequence[MutableMapping[str, Any]],
-    load_ports: bool,
-    context: StreamFlowContext,
-    loading_context: DatabaseLoadingContext,
-):
-    if load_ports:
-        ports = await asyncio.gather(
-            *(
-                asyncio.create_task(loading_context.load_port(context, d["port"]))
-                for d in dependency_rows
-            )
-        )
-        return {d["name"]: p.name for d, p in zip(dependency_rows, ports)}
-    else:
-        # it is not helpful to have an instance in loading_context when it is building a new workflow
-        port_rows = await asyncio.gather(
-            *(
-                asyncio.create_task(context.database.get_port(d["port"]))
-                for d in dependency_rows
-            )
-        )
-        return {d["name"]: p["name"] for d, p in zip(dependency_rows, port_rows)}
 
 
 # The function given in input an object return a dictionary with attribute:value
