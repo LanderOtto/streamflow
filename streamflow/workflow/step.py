@@ -1347,6 +1347,8 @@ class ScheduleStep(BaseStep):
                     realpath = await remotepath.follow_symlink(
                         self.workflow.context, connector, location, directory
                     )
+                    # if not realpath:
+                    #     continue
                     if realpath != directory:
                         self.workflow.context.data_manager.register_path(
                             location=location,

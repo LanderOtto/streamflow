@@ -77,7 +77,7 @@ def get_files_from_token(token: Token) -> MutableSequence[str]:
     return []
 
 
-async def get_step_instances_from_output_port(port_id, context):
+async def get_steps_row_from_output_port(port_id, context):
     step_id_rows = await context.database.get_steps_from_output_port(port_id)
     return await asyncio.gather(
         *(

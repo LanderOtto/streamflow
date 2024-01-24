@@ -24,7 +24,7 @@ from streamflow.recovery.rollback_recovery import (
 from streamflow.recovery.utils import (
     _is_token_available,
     get_execute_step_out_token_ids,
-    get_step_instances_from_output_port,
+    get_steps_row_from_output_port,
     increase_tag,
 )
 from streamflow.workflow.port import (
@@ -259,7 +259,7 @@ class RollbackRecoveryPolicy:
                         port_row = await self.context.database.get_port_from_token(
                             new_token.persistent_id
                         )
-                        step_rows = await get_step_instances_from_output_port(
+                        step_rows = await get_steps_row_from_output_port(
                             port_row["id"], self.context
                         )
                         logger.debug(

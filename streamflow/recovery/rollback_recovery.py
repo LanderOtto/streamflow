@@ -23,7 +23,7 @@ from streamflow.cwl.transformer import (
 from streamflow.log_handler import logger
 from streamflow.recovery.dev_utils import print_token_val
 from streamflow.recovery.utils import (
-    get_step_instances_from_output_port,
+    get_steps_row_from_output_port,
     _is_token_available,
     get_key_by_value,
     load_and_add_ports,
@@ -356,7 +356,7 @@ class RollbackDeterministicWorkflowPolicy:
             ):
                 logger.debug(
                     f"update_token: port {port_name} receive t_id {token.persistent_id} (available {is_av}). "
-                    f"However token id {equal_token_id} (available {self.token_available[equal_token_id]}) is used"
+                    f"However token id {equal_token_id} (available {self.token_available[equal_token_id]}) is used "
                     f"because it is already in the graph"
                 )
                 return equal_token_id
@@ -555,6 +555,14 @@ class RollbackDeterministicWorkflowPolicy:
             if step.name not in steps_to_remove and isinstance(
                 step, BackPropagationTransformer
             ):
+                loop_terminator_1 = any(
+                    prev_step
+                    for port in step.get_output_ports().values()
+                    for prev_step in port.get_input_steps()
+                    if isinstance(prev_step, CombinatorStep) and isinstance(
+                        prev_step.combinator, LoopTerminationCombinator
+                    )
+                )
                 loop_terminator = False
                 for port in step.get_output_ports().values():
                     for prev_step in port.get_input_steps():
@@ -606,22 +614,23 @@ class RollbackDeterministicWorkflowPolicy:
             logger.debug(f"Loaded step {step.name} (id {sid})")
             step_name_id[step.name] = sid
 
-            # if there are not the input ports in the workflow, the step is not added
+            # if step input port are not in the workflow, the step is not added
             if not (set(step.input_ports.values()) - set(new_workflow.ports.keys())):
                 if isinstance(step, OutputForwardTransformer):
+                    # add step only if there is its LoopOutputStep
                     port_id = min(self.port_name_ids[step.get_output_port().name])
-                    for (
-                        step_dep_row
-                    ) in await new_workflow.context.database.get_steps_from_input_port(
+                    dependency_rows = await new_workflow.context.database.get_steps_from_input_port(
                         port_id
-                    ):
+                    )
+                    for step_dep_row in dependency_rows:
                         step_row = await new_workflow.context.database.get_step(
                             step_dep_row["step"]
                         )
-                        if step_row[
-                            "name"
-                        ] not in new_workflow.steps.keys() and issubclass(
-                            get_class_from_name(step_row["type"]), LoopOutputStep
+                        if (
+                            step_row["name"] not in new_workflow.steps.keys()
+                            and issubclass(
+                                get_class_from_name(step_row["type"]), LoopOutputStep
+                            )
                         ):
                             logger.debug(
                                 f"Step {step_row['name']} from id {step_row['id']} will be added soon (2)"
@@ -629,11 +638,10 @@ class RollbackDeterministicWorkflowPolicy:
                             new_step_ids.add(step_row["id"])
                 elif isinstance(step, BackPropagationTransformer):
                     # for port_name in step.output_ports.values(): # potrebbe sostituire questo for
-                    for (
-                        port_dep_row
-                    ) in await new_workflow.context.database.get_output_ports(
+                    dependency_rows = await new_workflow.context.database.get_output_ports(
                         step_name_id[step.name]
-                    ):
+                    )
+                    for port_dep_row in dependency_rows:
                         # if there are more iterations
                         if (
                             len(
@@ -643,14 +651,14 @@ class RollbackDeterministicWorkflowPolicy:
                             )
                             > 1
                         ):
-                            for (
-                                step_dep_row
-                            ) in await new_workflow.context.database.get_steps_from_output_port(
+                            step_dependency_rows = await new_workflow.context.database.get_steps_from_output_port(
                                 port_dep_row["port"]
-                            ):
+                            )
+                            for step_dep_row in step_dependency_rows:
                                 step_row = await new_workflow.context.database.get_step(
                                     step_dep_row["step"]
                                 )
+                                # if there is a CombinatorStep with inside a LoopTerminationCombinator
                                 if issubclass(
                                     get_class_from_name(step_row["type"]),
                                     CombinatorStep,
@@ -728,7 +736,7 @@ class NewProvenanceGraphNavigation:
             port_row = await self.context.database.get_port_from_token(
                 token.persistent_id
             )
-            step_rows = await get_step_instances_from_output_port(
+            step_rows = await get_steps_row_from_output_port(
                 port_row["id"], self.context
             )
             # questa condizione si potrebbe mettere come parametro e utilizzarla come taglio.
