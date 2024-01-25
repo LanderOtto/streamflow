@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 
-from typing import MutableMapping, MutableSet
+from typing import MutableMapping
 
 from streamflow.core import utils
 from streamflow.core.utils import (
     random_name,
     compare_tags,
+    get_class_fullname,
 )
 from streamflow.core.exception import FailureHandlingException
 
@@ -16,10 +17,12 @@ from streamflow.log_handler import logger
 from streamflow.persistence.loading_context import WorkflowBuilder
 from streamflow.recovery.dev_utils import extra_data_print, another_str_converter
 from streamflow.recovery.rollback_recovery import (
-    NewProvenanceGraphNavigation,
     DirectGraph,
     ProvenanceToken,
     TokenAvailability,
+    explore_provenance,
+    RollbackDeterministicWorkflowPolicy,
+    PortInfo,
 )
 from streamflow.recovery.utils import (
     _is_token_available,
@@ -92,13 +95,31 @@ class RollbackRecoveryPolicy:
             failed_step.get_input_port("__job__").token_list,
         )
         valid_data = set()
-        npgn = NewProvenanceGraphNavigation(workflow.context)
-        await npgn.build_unfold_graph(
-            (*failed_job.inputs.values(), job_token), valid_data
+        port_infos = []
+        job_port = failed_step.get_input_port("__job__")
+        port_infos.append(
+            PortInfo(
+                job_port.persistent_id,
+                job_port.name,
+                get_class_fullname(type(job_port)),
+                job_token,
+            )
+        )
+        failed_step_output_ports = failed_step.get_output_ports()
+        for dependency_name, token in failed_job.inputs.items():
+            if port := failed_step_output_ports.get(dependency_name, None):
+                port_infos.append(
+                    PortInfo(
+                        port.persistent_id,
+                        port.name,
+                        get_class_fullname(type(port)),
+                        token,
+                    )
+                )
+        inner_graph = await explore_provenance(
+            port_infos, failed_step_output_ports.values(), valid_data, self.context
         )
 
-        # update class state (attributes) and jobs synchronization
-        inner_graph = await npgn.refold_graphs(failed_step.get_output_ports().values())
         logger.debug("Start sync-rollbacks")
         await self.sync_running_jobs(inner_graph, new_workflow, valid_data)
 
@@ -126,14 +147,7 @@ class RollbackRecoveryPolicy:
         #         )
         logger.debug("end save_for_retag")
 
-        last_iteration = await _new_put_tokens(
-            new_workflow,
-            inner_graph.dcg_port[DirectGraph.INIT_GRAPH_FLAG],
-            inner_graph.port_tokens,
-            inner_graph.token_instances,
-            inner_graph.token_available,
-            inner_graph.port_name_ids,
-        )
+        last_iteration = await _new_put_tokens(new_workflow, inner_graph)
         logger.debug("end _put_tokens")
 
         await _new_set_steps_state(new_workflow, inner_graph)
@@ -143,21 +157,22 @@ class RollbackRecoveryPolicy:
             new_workflow,
             None,  # job_rollback,
             {
-                t_id: (instance, inner_graph.token_available[t_id])
-                for t_id, instance in inner_graph.token_instances.items()
+                t_id: (instance, inner_graph.is_token_available(t_id))
+                for t_id, instance in (await inner_graph.get_token_instances()).items()
             },
             last_iteration,
         )
 
         return new_workflow, last_iteration
 
-    def add_waiter(self, job_name, port_name, workflow, rdwp, port_recovery=None):
+    async def add_waiter(self, job_name, port_name, workflow, rdwp, port_recovery=None):
         if port_recovery:
             port_recovery.waiting_token += 1
         else:
+            token_instances = await rdwp.get_token_instances()
             max_tag = get_max_tag(
                 {
-                    rdwp.token_instances[t_id]
+                    token_instances[t_id]
                     for t_id in rdwp.port_tokens.get(port_name, [])
                     if t_id > 0
                 }
@@ -182,18 +197,17 @@ class RollbackRecoveryPolicy:
     async def sync_running_jobs(self, rdwp, workflow, valid_data):
         logger.debug(f"INIZIO sync (wf {workflow.name}) RUNNING JOBS")
         map_job_port = {}
+        token_instances = await rdwp.get_token_instances()
         job_token_names = [
             token.value.name
-            for token in rdwp.token_instances.values()
+            for token in token_instances.values()
             if isinstance(token, JobToken)
         ]
         logger.debug(f"TOKEN_GRAPH: {another_str_converter(rdwp.dag_tokens)}")
         logger.debug(f"PORT_TAGS: {another_str_converter(rdwp.port_tokens)}")
 
         for job_token in [
-            token
-            for token in rdwp.token_instances.values()
-            if isinstance(token, JobToken)
+            token for token in token_instances.values() if isinstance(token, JobToken)
         ]:
             job_request = await self.context.failure_manager.setup_job_request(
                 job_token.value.name, default_is_running=False
@@ -209,7 +223,7 @@ class RollbackRecoveryPolicy:
                     )
                     logger.debug(f"Lista output_port_names: {output_port_names}")
                     for output_port_name in output_port_names:
-                        port_recovery = self.add_waiter(
+                        port_recovery = await self.add_waiter(
                             job_token.value.name,
                             output_port_name,
                             workflow,
@@ -294,19 +308,22 @@ class RollbackRecoveryPolicy:
         logger.debug(f"FINE sync (wf {workflow.name}) RUNNING JOBS")
 
 
-async def _new_put_tokens(
-    new_workflow: Workflow,
-    init_ports: MutableSet[str],
-    port_tokens: MutableMapping[str, MutableSet[int]],
-    token_instances: MutableMapping[int, Token],
-    token_available: MutableMapping[int, bool],
-    port_name_ids: MutableSet[str, MutableSet[int]],
-):
+async def _new_put_tokens(new_workflow: Workflow, graph):
+    if isinstance(graph, RollbackDeterministicWorkflowPolicy):
+        init_ports = graph.dcg_port[DirectGraph.INIT_GRAPH_FLAG]
+    else:
+        init_ports = {
+            graph.get_port_from_token(t_id)
+            for t_id in graph.dag_tokens[DirectGraph.INIT_GRAPH_FLAG]
+        }
+    port_tokens = graph.port_tokens
+    token_instances = await graph.get_token_instances()
+
     for port_name in init_ports:
         token_list = [
             token_instances[t_id]
             for t_id in port_tokens[port_name]
-            if isinstance(t_id, int) and token_available[t_id]
+            if isinstance(t_id, int) and graph.is_token_available(t_id)
         ]
         token_list.sort(key=lambda x: x.tag, reverse=False)
         for i, t in enumerate(token_list):
@@ -386,11 +403,12 @@ def get_max_tag_list(tag_list):
 
 
 async def _new_set_steps_state(new_workflow, rdwp):
+    token_instances = await rdwp.get_token_instances()
     for step in new_workflow.steps.values():
         if isinstance(step, ScatterStep):
             port = step.get_output_port()
             str_t = [
-                (t_id, rdwp.token_instances[t_id].tag, rdwp.token_available[t_id])
+                (t_id, token_instances[t_id].tag, rdwp.is_token_available(t_id))
                 for t_id in rdwp.port_tokens[port.name]
             ]
             logger.debug(
@@ -400,13 +418,13 @@ async def _new_set_steps_state(new_workflow, rdwp):
             for t_id in rdwp.port_tokens[port.name]:
                 logger.debug(
                     f"_set_scatter_inner_state: Token {t_id} is necessary to rollback the scatter on port {port.name} "
-                    f"(wf {new_workflow.name}). It is {'' if rdwp.token_available[t_id] else 'NOT '}available"
+                    f"(wf {new_workflow.name}). It is {'' if rdwp.is_token_available(t_id) else 'NOT '}available"
                 )
                 # a possible control can be if not token_visited[t_id][1]: then add in valid tags
                 if step.valid_tags is None:
-                    step.valid_tags = {rdwp.token_instances[t_id].tag}
+                    step.valid_tags = {token_instances[t_id].tag}
                 else:
-                    step.valid_tags.add(rdwp.token_instances[t_id].tag)
+                    step.valid_tags.add(token_instances[t_id].tag)
         elif isinstance(step, LoopCombinatorStep):
             port = list(step.get_input_ports().values()).pop()
             token = port.token_list[0]
@@ -418,46 +436,13 @@ async def _new_set_steps_state(new_workflow, rdwp):
                     f"recover_jobs-last_iteration: Step {step.name} combinator updated "
                     f"map[{prefix}] = {step.combinator.iteration_map[prefix]}"
                 )
-        # if not isinstance(
-        #     step, (BackPropagationTransformer, CombinatorStep, ConditionalStep)
-        # ):
-        #     max_tag = "0"
-        #     for port_name in step.input_ports.values():
-        #         curr_tag = get_max_tag(
-        #             {
-        #                 rdwp.token_instances[t_id]
-        #                 for t_id in rdwp.port_tokens.get(port_name, [])
-        #                 if t_id > 0
-        #             }
-        #         )
-        #         if curr_tag and compare_tags(curr_tag, max_tag) == 1:
-        #             max_tag = curr_tag
-        #     if max_tag != "0":
-        #         step.token_tag_stop = ".".join(
-        #             (*max_tag.split(".")[:-1], str(int(max_tag.split(".")[-1]) + 1))
-        #         )
-        #         logger.info(
-        #             f"wf {new_workflow.name}. Step {step.name}. token tag stop {step.token_tag_stop}"
-        #         )
-        #     pass
-        # max_tag = "0"
-        # for port_name in step.input_ports.values():
-        #     curr_tag = get_max_tag(
-        #         {
-        #             rdwp.token_instances[t_id]
-        #             for t_id in rdwp.port_tokens.get(port_name, [])
-        #             if t_id > 0
-        #         }
-        #     )
-        #     if curr_tag and compare_tags(curr_tag, max_tag) == 1:
-        #         max_tag = curr_tag
         for port_name, port in new_workflow.ports.items():
             if not isinstance(
                 port, (ConnectorPort, JobPort, FilterTokenPort, InterWorkflowPort)
             ):
                 max_tag = get_max_tag(
                     {
-                        rdwp.token_instances[t_id]
+                        token_instances[t_id]
                         for t_id in rdwp.port_tokens.get(port_name, [])
                         if t_id > 0
                     }

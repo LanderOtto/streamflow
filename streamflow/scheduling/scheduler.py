@@ -193,8 +193,10 @@ class DefaultScheduler(Scheduler):
                     self.job_allocations.keys(),
                 )
             )
-            logger.info(f"Scheduling job_name: {job_name} on {location.deployment}\n\t- running jobs: {running_jobs}"
-                        f"\n\t- rollback jobs: {rollback_jobs}")
+            logger.info(
+                f"Scheduling job_name: {job_name} on {location.deployment}\n\t- running jobs: {running_jobs}"
+                f"\n\t- rollback jobs: {rollback_jobs}"
+            )
             running_jobs.extend(rollback_jobs)
         else:
             running_jobs = []
@@ -235,7 +237,7 @@ class DefaultScheduler(Scheduler):
                                 job_context.job.name,
                                 posixpath.join(deployment, target.service)
                                 if target.service
-                                else deployment
+                                else deployment,
                             )
                         )
                     available_locations = dict(
@@ -267,7 +269,7 @@ class DefaultScheduler(Scheduler):
                                     posixpath.join(deployment, target.service)
                                     if target.service
                                     else deployment,
-                                    list(valid_locations.keys())
+                                    list(valid_locations.keys()),
                                 )
                             )
                         if target.scheduling_group is not None:
@@ -344,7 +346,7 @@ class DefaultScheduler(Scheduler):
                                     else deployment,
                                     f" Retry in {self.retry_interval} seconds"
                                     if self.retry_interval
-                                    else ""
+                                    else "",
                                 )
                             )
                 try:
