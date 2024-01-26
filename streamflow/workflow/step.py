@@ -363,9 +363,6 @@ class CombinatorStep(BaseStep):
                             AsyncIterable,
                             self.combinator.combine(task_name, token),
                         ):
-                            logger.debug(
-                                f"Step {self.name} (wf {self.workflow.name}) combine on port {task_name}"
-                            )
                             ins = [id for t in schema.values() for id in t["input_ids"]]
                             for port_name, token in schema.items():
                                 logger.debug(
@@ -378,18 +375,12 @@ class CombinatorStep(BaseStep):
                                         input_token_ids=ins,
                                     )
                                 )
-                            logger.debug(
-                                f"Step {self.name} (wf {self.workflow.name}) goes to next combine"
-                            )
                         logger.debug(
                             f"Step {self.name} (wf {self.workflow.name}) terminates schema on port {task_name}"
                         )
 
                     # Create a new task in place of the completed one if the port is not terminated
                     if task_name not in terminated:
-                        logger.debug(
-                            f"Step {self.name} (wf {self.workflow.name}) re-appends port {task_name} in input tasks"
-                        )
                         input_tasks.append(
                             asyncio.create_task(
                                 self.get_input_ports()[task_name].get(
@@ -398,9 +389,6 @@ class CombinatorStep(BaseStep):
                                 name=task_name,
                             )
                         )
-                    logger.debug(
-                        f"Step {self.name} (wf {self.workflow.name}) checks next port"
-                    )
         # Terminate step
         await self.terminate(status)
 

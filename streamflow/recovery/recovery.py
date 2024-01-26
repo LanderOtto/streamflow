@@ -84,12 +84,6 @@ class RollbackRecoveryPolicy:
             new_port.add_inter_port(port, stop_tag)
             new_workflow.ports[new_port.name] = new_port
 
-        # should be an impossible case
-        if failed_step.persistent_id is None:
-            raise FailureHandlingException(
-                f"Workflow {workflow.name} has the step {failed_step.name} not saved in the database."
-            )
-
         job_token = get_job_token(
             failed_job.name,
             failed_step.get_input_port("__job__").token_list,
@@ -119,8 +113,8 @@ class RollbackRecoveryPolicy:
         inner_graph = await explore_provenance(
             port_infos, failed_step_output_ports.values(), valid_data, self.context
         )
+        logger.debug("end explore provenance")
 
-        logger.debug("Start sync-rollbacks")
         await self.sync_running_jobs(inner_graph, new_workflow, valid_data)
 
         logger.debug("End sync-rollbacks")
@@ -134,23 +128,13 @@ class RollbackRecoveryPolicy:
             new_workflow,
             loading_context,
         )
-        # _replace_loop_condition(new_workflow, inner_graph)
-        if "/subworkflow/i1-back-propagation-transformer" in new_workflow.steps.keys():
-            raise FailureHandlingException("Caricata i1-back-prop CHE NON SERVE")
         logger.debug("end populate")
-
-        # for port in failed_step.get_input_ports().values():
-        #     if port.name not in new_workflow.ports.keys():
-        #         raise FailureHandlingException(
-        #             f"La input port {port.name} dello step fallito {failed_step.name} "
-        #             f"non è presente nel new_workflow {new_workflow.name}"
-        #         )
-        logger.debug("end save_for_retag")
 
         last_iteration = await _new_put_tokens(new_workflow, inner_graph)
         logger.debug("end _put_tokens")
 
         await _new_set_steps_state(new_workflow, inner_graph)
+        logger.debug("end set state")
 
         extra_data_print(
             workflow,
@@ -363,12 +347,6 @@ async def _new_put_tokens(new_workflow: Workflow, graph):
             if loop_combinator_input and not is_back_prop_output_port:
                 if port.token_list[-1].tag != "0":
                     increased_tag = increase_tag(port.token_list[-1].tag)
-                    # increased_tag = ".".join(
-                    #     (
-                    #         *port.token_list[-1].tag.split(".")[:-1],
-                    #         str(int(port.token_list[-1].tag.split(".")[-1]) + 1),
-                    #     )
-                    # )
                     port.put(Token(value=None, tag=increased_tag))
                 logger.debug(
                     f"put_tokens: Port {port.name}, with {len(port.token_list)} tokens, "
