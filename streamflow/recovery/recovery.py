@@ -116,8 +116,8 @@ class RollbackRecoveryPolicy:
         logger.debug("end explore provenance")
 
         await self.sync_running_jobs(inner_graph, new_workflow, valid_data)
-
         logger.debug("End sync-rollbacks")
+
         ports, steps = await inner_graph.get_port_and_step_ids(
             failed_step.output_ports.values()
         )
@@ -182,17 +182,15 @@ class RollbackRecoveryPolicy:
         logger.debug(f"INIZIO sync (wf {workflow.name}) RUNNING JOBS")
         map_job_port = {}
         token_instances = await rdwp.get_token_instances()
-        job_token_names = [
-            token.value.name
+        job_tokens = {
+            token.value.name: token
             for token in token_instances.values()
             if isinstance(token, JobToken)
-        ]
+        }
         logger.debug(f"TOKEN_GRAPH: {another_str_converter(rdwp.dag_tokens)}")
         logger.debug(f"PORT_TAGS: {another_str_converter(rdwp.port_tokens)}")
 
-        for job_token in [
-            token for token in token_instances.values() if isinstance(token, JobToken)
-        ]:
+        for job_token in job_tokens.values():
             job_request = await self.context.failure_manager.setup_job_request(
                 job_token.value.name, default_is_running=False
             )
@@ -200,7 +198,7 @@ class RollbackRecoveryPolicy:
                 if job_request.is_running:
                     logger.debug(
                         f"Sync Job {job_token.value.name} (wf {workflow.name}): JobRequest is running on "
-                        f"wf {job_request.workflow.name}. Other jobs: {job_token_names}"
+                        f"wf {job_request.workflow.name}. Other jobs: {list(job_tokens.keys())}"
                     )
                     output_port_names = await rdwp.get_execute_output_port_names(
                         job_token
@@ -220,7 +218,7 @@ class RollbackRecoveryPolicy:
                         )
                         map_job_port.setdefault(job_token.value.name, port_recovery)
                         workflow.ports[port_recovery.port.name] = port_recovery.port
-                    if len(job_token_names) == 1:
+                    if len(job_tokens) == 1:
                         logger.debug(f"New-workflow {workflow.name} will be empty.")
                         pass
                         # raise FailureHandlingException(
@@ -262,7 +260,7 @@ class RollbackRecoveryPolicy:
                         )
                         logger.debug(
                             f"Sync Job {job_token.value.name} (wf {workflow.name}): "
-                            f"Replace {rdwp.get_equal_token(port_name, new_token)} with {new_token.persistent_id}"
+                            f"Replace {await rdwp.get_equal_token(port_name, new_token)} with {new_token.persistent_id}"
                         )
                         await rdwp.replace_token_and_remove(
                             port_name,
