@@ -107,7 +107,7 @@ class RollbackRecoveryPolicy:
         )
         failed_step_output_ports = failed_step.get_output_ports()
         for dependency_name, token in failed_job.inputs.items():
-            if port := failed_step_output_ports.get(dependency_name, None):
+            if port := failed_step.get_input_port(dependency_name):
                 port_infos.append(
                     PortInfo(
                         port.persistent_id,
