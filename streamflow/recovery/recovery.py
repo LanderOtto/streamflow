@@ -144,7 +144,7 @@ class RollbackRecoveryPolicy:
                 t_id: (instance, inner_graph.is_token_available(t_id))
                 for t_id, instance in (await inner_graph.get_token_instances()).items()
             },
-            last_iteration,
+            inner_graph,
         )
 
         return new_workflow, last_iteration
@@ -248,9 +248,11 @@ class RollbackRecoveryPolicy:
                         f"Sync Job {job_token.value.name} (wf {workflow.name}): JobRequest has token_output "
                         f"{ {k: v.persistent_id for k, v in job_request.token_output.items()} }"
                     )
-                    for port_name in await rdwp.get_execute_output_port_names(
+                    output_port_names = await rdwp.get_execute_output_port_names(
                         job_token
-                    ):
+                    )
+                    logger.debug(f"Lista output_port_names: {output_port_names}")
+                    for port_name in output_port_names:
                         new_token = job_request.token_output[port_name]
                         port_row = await self.context.database.get_port_from_token(
                             new_token.persistent_id

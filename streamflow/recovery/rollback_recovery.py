@@ -317,13 +317,16 @@ class ProvenanceGraph:
         for t_id in tokens_without_successors:
             logger.debug(f"Remove token {t_id} because it has not successors")
             self.remove_prevs(t_id)
+            self.dag_tokens.remove(t_id)
             port_name = get_key_by_value(t_id, self.port_tokens)
+            self.port_tokens[port_name].remove(t_id)
             if not self.port_tokens[port_name]:
                 logger.debug(f"Remove port_name {port_name} because it has not tokens")
                 self.port_tokens.pop(port_name)
                 self.port_name_ids.pop(port_name)
 
     def replace(self, token_id_a, token_id_b, port_name):
+        logger.info(f"Token {token_id_a} replaces token {token_id_b} in port {port_name}")
         self.dag_tokens.replace(token_id_a, token_id_b)
         self.port_tokens[port_name].remove(token_id_a)
         self.port_tokens[port_name].add(token_id_b)
@@ -336,40 +339,49 @@ class ProvenanceGraph:
         if token_id := await self.get_equal_token(info_port.name, info_port.token):
             # if it is available remove old token and its predecessors
             if is_available:
+                logger.info(f"updating token: {info_port.token.persistent_id} is available and replace {token_id}")
+                self.remove_prevs(token_id)
                 self.replace(token_id, info_port.token.persistent_id, info_port.name)
-                self.remove_prevs(info_port.token.persistent_id)
                 return info_port.token.persistent_id
 
             # if it is newer replace old token
             elif token_id < info_port.token.persistent_id:
+                logger.info(f"updating token: {info_port.token.persistent_id} is newer and replace {token_id}")
                 self.replace(token_id, info_port.token.persistent_id, info_port.name)
                 return info_port.token.persistent_id
             else:
+                logger.info(f"updating token: {info_port.token.persistent_id} is not used and it returned old token {token_id}")
                 return token_id
         else:
+            logger.info(f"updating token: equal token not present. Returned token {info_port.token.persistent_id}")
             return info_port.token.persistent_id
 
     async def add(self, info_vertex_a: PortInfo, info_vertex_b: PortInfo):
         token_a_id = await self.update_token(info_vertex_a, False)
         token_b_id = await self.update_token(info_vertex_b, info_vertex_a is None)
 
-        self.dag_tokens.add(token_a_id, token_b_id)
+        if token_b_id is None or token_b_id in self.dag_tokens.keys():
+            self.dag_tokens.add(token_a_id, token_b_id)
 
-        if token_a_id:
-            self.port_tokens.setdefault(info_vertex_a.name, set()).add(
-                info_vertex_a.token.persistent_id
-            )
-            self.port_name_ids.setdefault(info_vertex_a.name, set()).add(
-                info_vertex_a.id
-            )
+            if token_a_id:
+                self.port_tokens.setdefault(info_vertex_a.name, set()).add(token_a_id)
+                self.port_name_ids.setdefault(info_vertex_a.name, set()).add(
+                    info_vertex_a.id
+                )
 
-        if token_b_id:
-            self.port_tokens.setdefault(info_vertex_b.name, set()).add(
-                info_vertex_b.token.persistent_id
-            )
-            self.port_name_ids.setdefault(info_vertex_b.name, set()).add(
-                info_vertex_b.id
-            )
+            if token_b_id:
+                self.port_tokens.setdefault(info_vertex_b.name, set()).add(token_b_id)
+                self.port_name_ids.setdefault(info_vertex_b.name, set()).add(
+                    info_vertex_b.id
+                )
+        else:
+            logger.info(f"Link {token_a_id} to {token_b_id} did not added because {token_b_id} is not a vertex")
+
+
+        for k, values in self.dag_tokens.items():
+            for v in values:
+                if v not in self.dag_tokens.keys() and v != DirectGraph.LAST_GRAPH_FLAG:
+                    logger.info(f"Adding {token_a_id} to {token_b_id} it was found that token {v} has not a successor")
 
     async def get_port_and_step_ids(self, exclude_ports):
         steps = set()
@@ -682,4 +694,7 @@ class ProvenanceGraph:
         self.replace(old_token_id, token.persistent_id, port_name)
         self.remove_prevs(token.persistent_id)
         self.dag_tokens.add(None, token.persistent_id)
+        logger.info(
+            f"replace_token_and_remove: add link from init to {token.persistent_id}"
+        )
         return []
