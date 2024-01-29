@@ -132,8 +132,7 @@ class DefaultFailureManager(FailureManager):
         )
         return new_workflow
 
-    async def close(self):
-        ...
+    async def close(self): ...
 
     async def notify_jobs(self, job_token, out_port_name, token):
         job_name = job_token.value.name
@@ -158,11 +157,13 @@ class DefaultFailureManager(FailureManager):
                 if len(self.job_requests[job_name].queue):
                     str_port = "".join(
                         [
-                            f"\n\tHa trovato port_name {elem.port.name} port_id {elem.port.persistent_id} "
-                            f"workflow {elem.port.workflow.name} token_list {elem.port.token_list} "
-                            f"queues {elem.port.queues}. Waiting per {elem.waiting_token} prima del TerminationToken"
-                            if elem
-                            else "\n\t\tElem-None"
+                            (
+                                f"\n\tHa trovato port_name {elem.port.name} port_id {elem.port.persistent_id} "
+                                f"workflow {elem.port.workflow.name} token_list {elem.port.token_list} "
+                                f"queues {elem.port.queues}. Waiting per {elem.waiting_token} prima del TerminationToken"
+                                if elem
+                                else "\n\t\tElem-None"
+                            )
                             for elem in self.job_requests[job_name].queue
                         ]
                     )
@@ -241,9 +242,11 @@ class DefaultFailureManager(FailureManager):
 
             command_output = CommandOutput(
                 value=None,
-                status=new_workflow.steps[step.name].status
-                if new_workflow.steps.keys()
-                else Status.COMPLETED,
+                status=(
+                    new_workflow.steps[step.name].status
+                    if new_workflow.steps.keys()
+                    else Status.COMPLETED
+                ),
             )
             # When receiving a FailureHandlingException, simply fail
         except FailureHandlingException as e:
@@ -321,8 +324,7 @@ class DefaultFailureManager(FailureManager):
 
 
 class DummyFailureManager(FailureManager):
-    async def close(self):
-        ...
+    async def close(self): ...
 
     @classmethod
     def get_schema(cls) -> str:
@@ -343,8 +345,7 @@ class DummyFailureManager(FailureManager):
     ) -> CommandOutput:
         return command_output
 
-    async def notify_jobs(self, job_name, out_port_name, token):
-        ...
+    async def notify_jobs(self, job_name, out_port_name, token): ...
 
     async def handle_failure_transfer(self, job: Job, step: Step, port_name: str):
         return None

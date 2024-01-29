@@ -90,18 +90,15 @@ class HardwareRequirement(ABC):
         context: StreamFlowContext,
         row: MutableMapping[str, Any],
         loading_context: DatabaseLoadingContext,
-    ):
-        ...
+    ): ...
 
     @abstractmethod
     async def _save_additional_params(
         self, context: StreamFlowContext
-    ) -> MutableMapping[str, Any]:
-        ...
+    ) -> MutableMapping[str, Any]: ...
 
     @abstractmethod
-    def eval(self, inputs: MutableMapping[str, Token]) -> Hardware:
-        ...
+    def eval(self, inputs: MutableMapping[str, Token]) -> Hardware: ...
 
     @classmethod
     async def load(
@@ -196,8 +193,7 @@ class Policy(SchemaEntity):
         available_locations: MutableMapping[str, AvailableLocation],
         jobs: MutableMapping[str, JobAllocation],
         locations: MutableMapping[str, MutableMapping[str, LocationAllocation]],
-    ) -> Location | None:
-        ...
+    ) -> Location | None: ...
 
 
 class Scheduler(SchemaEntity):
@@ -209,12 +205,10 @@ class Scheduler(SchemaEntity):
         ] = {}
 
     @abstractmethod
-    async def close(self) -> None:
-        ...
+    async def close(self) -> None: ...
 
     @abstractmethod
-    def deallocate_job(self, job_name: str, keep_allocation: bool = False):
-        ...
+    def deallocate_job(self, job_name: str, keep_allocation: bool = False): ...
 
     def get_allocation(self, job_name: str) -> JobAllocation | None:
         return self.job_allocations.get(job_name)
@@ -249,11 +243,9 @@ class Scheduler(SchemaEntity):
         return allocation.target.service if allocation else None
 
     @abstractmethod
-    async def notify_status(self, job_name: str, status: Status) -> None:
-        ...
+    async def notify_status(self, job_name: str, status: Status) -> None: ...
 
     @abstractmethod
     async def schedule(
         self, job: Job, binding_config: BindingConfig, hardware_requirement: Hardware
-    ) -> None:
-        ...
+    ) -> None: ...

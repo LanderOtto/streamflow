@@ -69,7 +69,7 @@ async def get_execute_step_out_token_ids(next_token_ids, context):
     for t_id in next_token_ids:
         if t_id > 0:
             port_row = await context.database.get_port_from_token(t_id)
-            for step_id_row in await context.database.get_steps_from_output_port(
+            for step_id_row in await context.database.get_input_steps(
                 port_row["id"]
             ):
                 step_row = await context.database.get_step(step_id_row["step"])
@@ -326,7 +326,9 @@ class ProvenanceGraph:
                 self.port_name_ids.pop(port_name)
 
     def replace(self, token_id_a, token_id_b, port_name):
-        logger.info(f"Token {token_id_a} replaces token {token_id_b} in port {port_name}")
+        logger.info(
+            f"Token {token_id_a} replaces token {token_id_b} in port {port_name}"
+        )
         self.dag_tokens.replace(token_id_a, token_id_b)
         self.port_tokens[port_name].remove(token_id_a)
         self.port_tokens[port_name].add(token_id_b)
@@ -339,21 +341,29 @@ class ProvenanceGraph:
         if token_id := await self.get_equal_token(info_port.name, info_port.token):
             # if it is available remove old token and its predecessors
             if is_available:
-                logger.info(f"updating token: {info_port.token.persistent_id} is available and replace {token_id}")
+                logger.info(
+                    f"updating token: {info_port.token.persistent_id} is available and replace {token_id}"
+                )
                 self.remove_prevs(token_id)
                 self.replace(token_id, info_port.token.persistent_id, info_port.name)
                 return info_port.token.persistent_id
 
             # if it is newer replace old token
             elif token_id < info_port.token.persistent_id:
-                logger.info(f"updating token: {info_port.token.persistent_id} is newer and replace {token_id}")
+                logger.info(
+                    f"updating token: {info_port.token.persistent_id} is newer and replace {token_id}"
+                )
                 self.replace(token_id, info_port.token.persistent_id, info_port.name)
                 return info_port.token.persistent_id
             else:
-                logger.info(f"updating token: {info_port.token.persistent_id} is not used and it returned old token {token_id}")
+                logger.info(
+                    f"updating token: {info_port.token.persistent_id} is not used and it returned old token {token_id}"
+                )
                 return token_id
         else:
-            logger.info(f"updating token: equal token not present. Returned token {info_port.token.persistent_id}")
+            logger.info(
+                f"updating token: equal token not present. Returned token {info_port.token.persistent_id}"
+            )
             return info_port.token.persistent_id
 
     async def add(self, info_vertex_a: PortInfo, info_vertex_b: PortInfo):
@@ -375,13 +385,16 @@ class ProvenanceGraph:
                     info_vertex_b.id
                 )
         else:
-            logger.info(f"Link {token_a_id} to {token_b_id} did not added because {token_b_id} is not a vertex")
+            logger.info(
+                f"Link {token_a_id} to {token_b_id} did not added because {token_b_id} is not a vertex"
+            )
 
-
-        for k, values in self.dag_tokens.items():
+        for values in self.dag_tokens.values():
             for v in values:
                 if v not in self.dag_tokens.keys() and v != DirectGraph.LAST_GRAPH_FLAG:
-                    logger.info(f"Adding {token_a_id} to {token_b_id} it was found that token {v} has not a successor")
+                    logger.info(
+                        f"Adding {token_a_id} to {token_b_id} it was found that token {v} has not a successor"
+                    )
 
     async def get_port_and_step_ids(self, exclude_ports):
         steps = set()
@@ -393,7 +406,7 @@ class ProvenanceGraph:
         for row_dependencies in await asyncio.gather(
             *(
                 asyncio.create_task(
-                    self.context.database.get_steps_from_output_port(port_id)
+                    self.context.database.get_input_steps(port_id)
                 )
                 for port_id in ports
             )
@@ -570,7 +583,7 @@ class ProvenanceGraph:
                     # add step only if there is its LoopOutputStep
                     port_id = min(self.port_name_ids[step.get_output_port().name])
                     dependency_rows = (
-                        await new_workflow.context.database.get_steps_from_input_port(
+                        await new_workflow.context.database.get_output_steps(
                             port_id
                         )
                     )
@@ -604,7 +617,7 @@ class ProvenanceGraph:
                             )
                             > 1
                         ):
-                            step_dependency_rows = await new_workflow.context.database.get_steps_from_output_port(
+                            step_dependency_rows = await new_workflow.context.database.get_input_steps(
                                 port_dep_row["port"]
                             )
                             for step_dep_row in step_dependency_rows:
@@ -668,7 +681,7 @@ class ProvenanceGraph:
             port_name = get_key_by_value(t_id, self.port_tokens)
             port_id = max(self.port_name_ids[port_name])
 
-            step_rows = await self.context.database.get_steps_from_output_port(port_id)
+            step_rows = await self.context.database.get_input_steps(port_id)
             for step_row in await asyncio.gather(
                 *(
                     asyncio.create_task(self.context.database.get_step(sr["step"]))

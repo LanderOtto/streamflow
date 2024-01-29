@@ -235,9 +235,11 @@ class DefaultScheduler(Scheduler):
                         logger.debug(
                             "Retrieving available locations for job {} on {}".format(
                                 job_context.job.name,
-                                posixpath.join(deployment, target.service)
-                                if target.service
-                                else deployment,
+                                (
+                                    posixpath.join(deployment, target.service)
+                                    if target.service
+                                    else deployment
+                                ),
                             )
                         )
                     available_locations = dict(
@@ -264,11 +266,13 @@ class DefaultScheduler(Scheduler):
                     if valid_locations:
                         if logger.isEnabledFor(logging.DEBUG):
                             logger.debug(
-                                "Available locations for job {} on {} are {}".format(
+                                "Available locations for job {} on {} are {}.".format(
                                     job_context.job.name,
-                                    posixpath.join(deployment, target.service)
-                                    if target.service
-                                    else deployment,
+                                    (
+                                        posixpath.join(deployment, target.service)
+                                        if target.service
+                                        else deployment
+                                    ),
                                     list(valid_locations.keys()),
                                 )
                             )
@@ -341,12 +345,16 @@ class DefaultScheduler(Scheduler):
                             logger.debug(
                                 "No location available for job {} on deployment {}.{}".format(
                                     job_context.job.name,
-                                    posixpath.join(deployment, target.service)
-                                    if target.service
-                                    else deployment,
-                                    f" Retry in {self.retry_interval} seconds"
-                                    if self.retry_interval
-                                    else "",
+                                    (
+                                        posixpath.join(deployment, target.service)
+                                        if target.service
+                                        else deployment
+                                    ),
+                                    (
+                                        f" Retry in {self.retry_interval} seconds"
+                                        if self.retry_interval
+                                        else ""
+                                    ),
                                 )
                             )
                 try:
@@ -362,7 +370,7 @@ class DefaultScheduler(Scheduler):
                         )
                         logger.debug(
                             f"No locations available for job {job_context.job.name} "
-                            f"in target {target_name}. Waiting {self.retry_interval} seconds"
+                            f"in target {target_name}. Waiting {self.retry_interval} seconds."
                         )
 
     async def close(self):
