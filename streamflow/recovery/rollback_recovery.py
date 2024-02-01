@@ -17,10 +17,12 @@ from streamflow.cwl.transformer import (
     BackPropagationTransformer,
     CWLTokenTransformer,
     OutputForwardTransformer,
+    CloneTransformer,
+    CartesianProductSizeTransformer,
+    DotProductSizeTransformer,
 )
 from streamflow.log_handler import logger
 from streamflow.recovery.utils import (
-    get_steps_row_from_output_port,
     _is_token_available,
     get_key_by_value,
     load_and_add_ports,
@@ -80,17 +82,28 @@ async def get_execute_step_out_token_ids(next_token_ids, context):
     return execute_step_out_token_ids
 
 
-async def evaluate_token_availability(token, step_rows, context, valid_data):
+async def evaluate_token_availability(
+    token, dependency_rows, step_rows, context, valid_data
+):
     if await _is_token_available(token, context, valid_data):
         is_available = TokenAvailability.Available
     else:
         is_available = TokenAvailability.Unavailable
-    for step_row in step_rows:
+    for dependency_row, step_row in zip(dependency_rows, step_rows):
         port_row = await context.database.get_port_from_token(token.persistent_id)
         if issubclass(get_class_from_name(port_row["type"]), ConnectorPort):
             return TokenAvailability.Unavailable
 
-        if issubclass(
+        if "__size__" == dependency_row["name"] or isinstance(
+            get_class_from_name(step_row["type"]),
+            (
+                CloneTransformer,
+                DotProductSizeTransformer,
+                CartesianProductSizeTransformer,
+            ),
+        ):
+            return TokenAvailability.Available
+        elif issubclass(
             get_class_from_name(step_row["type"]),
             (
                 ExecuteStep,
@@ -129,7 +142,13 @@ async def explore_provenance(
 
     while frontier:
         port_info = frontier.popleft()
-        step_rows = await get_steps_row_from_output_port(port_info.id, context)
+        dependency_rows = await context.database.get_input_steps(port_info.id)
+        step_rows = await asyncio.gather(
+            *(
+                asyncio.create_task(context.database.get_step(step_id_row["step"]))
+                for step_id_row in dependency_rows
+            )
+        )
         # questa condizione si potrebbe mettere come parametro e utilizzarla come taglio.
         # Ovvero, dove l'utente vuole che si fermi la ricerca indietro
         if await context.failure_manager.is_running_token(port_info.token, valid_data):
@@ -139,7 +158,7 @@ async def explore_provenance(
             )
         else:
             is_available = await evaluate_token_availability(
-                port_info.token, step_rows, context, valid_data
+                port_info.token, dependency_rows, step_rows, context, valid_data
             )
             if is_available == TokenAvailability.Available:
                 await graph.add(None, port_info)
