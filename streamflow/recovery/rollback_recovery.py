@@ -69,9 +69,7 @@ async def get_execute_step_out_token_ids(next_token_ids, context):
     for t_id in next_token_ids:
         if t_id > 0:
             port_row = await context.database.get_port_from_token(t_id)
-            for step_id_row in await context.database.get_input_steps(
-                port_row["id"]
-            ):
+            for step_id_row in await context.database.get_input_steps(port_row["id"]):
                 step_row = await context.database.get_step(step_id_row["step"])
                 if step_row["type"] == get_class_fullname(ExecuteStep):
                     execute_step_out_token_ids.add(t_id)
@@ -405,9 +403,7 @@ class ProvenanceGraph:
         }
         for row_dependencies in await asyncio.gather(
             *(
-                asyncio.create_task(
-                    self.context.database.get_input_steps(port_id)
-                )
+                asyncio.create_task(self.context.database.get_input_steps(port_id))
                 for port_id in ports
             )
         ):
@@ -583,9 +579,7 @@ class ProvenanceGraph:
                     # add step only if there is its LoopOutputStep
                     port_id = min(self.port_name_ids[step.get_output_port().name])
                     dependency_rows = (
-                        await new_workflow.context.database.get_output_steps(
-                            port_id
-                        )
+                        await new_workflow.context.database.get_output_steps(port_id)
                     )
                     for step_dep_row in dependency_rows:
                         step_row = await new_workflow.context.database.get_step(
@@ -609,16 +603,14 @@ class ProvenanceGraph:
                     )
                     for port_dep_row in dependency_rows:
                         # if there are more iterations
-                        if (
-                            len(
-                                self.port_tokens[
-                                    step.output_ports[port_dep_row["name"]]
-                                ]
-                            )
-                            > 1
-                        ):
-                            step_dependency_rows = await new_workflow.context.database.get_input_steps(
-                                port_dep_row["port"]
+                        num_iterations = len(
+                            self.port_tokens[step.output_ports[port_dep_row["name"]]]
+                        )
+                        if num_iterations > 1:
+                            step_dependency_rows = (
+                                await new_workflow.context.database.get_input_steps(
+                                    port_dep_row["port"]
+                                )
                             )
                             for step_dep_row in step_dependency_rows:
                                 step_row = await new_workflow.context.database.get_step(
