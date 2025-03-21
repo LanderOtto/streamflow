@@ -20,6 +20,7 @@ from aiohttp import ClientResponse
 
 from streamflow.core.data import DataType
 from streamflow.core.exception import WorkflowExecutionException
+from streamflow.log_handler import logger
 
 if TYPE_CHECKING:
     from streamflow.core.context import StreamFlowContext
@@ -319,6 +320,10 @@ class LocalStreamFlowPath(
                 self.context.process_executor, _file_checksum_local, self.__str__()
             )
         else:
+            msg = "exists" if await self.exists() else "does not exist"
+            logger.info(f"File {self} {msg} on local")
+            if await self.is_symlink():
+                logger.info(f"File {self} is a symlink on local")
             return None
 
     async def exists(self) -> bool:
@@ -378,6 +383,13 @@ class LocalStreamFlowPath(
             return f.read(n)
 
     async def resolve(self, strict=False) -> LocalStreamFlowPath | None:
+        if locations := self.context.data_manager.get_data_locations(
+            path=self.__str__(),
+            deployment="local",
+            location_name="local",
+        ):
+            for loc in locations:
+                await loc.available.wait()
         if await self.exists():
             return self.with_segments(super().resolve(strict=strict))
         else:
