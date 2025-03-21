@@ -719,6 +719,10 @@ class CWLTransferStep(TransferStep):
                 # Build unique destination path
                 filepath = dst_path or (dst_dir / selected_location.relpath)
                 if not self.prefix_path:
+                    logger.info(
+                        f"src {selected_location.path} exists on location {selected_location.location} -> "
+                        f"copy unique file to {filepath} on location {dst_locations}"
+                    )
                     filepath = cast(CWLWorkflow, self.workflow).get_unique_output_path(
                         path=filepath, src_location=selected_location
                     )
@@ -732,6 +736,10 @@ class CWLTransferStep(TransferStep):
                 )
             except FileExistsError:
                 filepath = dst_path or (dst_dir / selected_location.relpath)
+                logger.debug(
+                    f"File {str(filepath)} exists on {[loc for loc in dst_locations]} location"
+                )
+
             # Transform token value
             new_token_value = {
                 "class": token_class,
@@ -765,6 +773,16 @@ class CWLTransferStep(TransferStep):
                         )
                         checksum = f"sha1${await loc_path.checksum()}"
                         if checksum != original_checksum:
+                            logger.info(
+                                f"Checksums are different\n"
+                                f"Checksum expected: {original_checksum}\n"
+                                f"Checksum got:      {checksum}"
+                            )
+                            await asyncio.sleep(2)
+                            new_checksum = f"sha1${await loc_path.checksum()}"
+                            logger.info(
+                                f"Checksum after sleep 2 seconds: {new_checksum}"
+                            )
                             raise WorkflowExecutionException(
                                 "Error transferring file {} in location {} to {} in location {}".format(
                                     selected_location.path,
@@ -809,6 +827,7 @@ class CWLTransferStep(TransferStep):
             # Build unique destination path
             filepath = dst_path or dst_dir
             if not self.prefix_path:
+                logger.info(f"Create unique: {filepath}")
                 filepath = cast(CWLWorkflow, self.workflow).get_unique_output_path(
                     path=filepath
                 )

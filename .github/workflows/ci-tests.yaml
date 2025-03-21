@@ -3,6 +3,7 @@ on:
   push:
     branches:
       - master
+      - debug/blurb
   pull_request:
     branches:
       - master
@@ -10,202 +11,12 @@ concurrency:
   group: build-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 jobs:
-  code-ql-check:
-    name: "StreamFlow CodeQL check"
-    runs-on: ubuntu-24.04
-    permissions:
-      security-events: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: github/codeql-action/init@v3
-        with:
-          config-file: .github/codeql/config.yml
-          languages: python
-      - uses: github/codeql-action/analyze@v3
-  cwl-conformance:
-    name: "CWL conformance tests"
-    strategy:
-      matrix:
-        on: [ "ubuntu-24.04" ]
-        python: [ "3.9", "3.10", "3.11", "3.12", "3.13" ]
-        version: [ "v1.0", "v1.1", "v1.2" ]
-        docker: [ "docker" ]
-        include:
-          - commit: "1c1f122f780075d910fdfdea7e15e46eef3c078d"
-            exclude: "docker_entrypoint"
-            version: "v1.0"
-          - commit: "6397014050177074c9ccd0d771577f7fa9f728a3"
-            exclude: "docker_entrypoint,stdin_shorcut,inplace_update_on_file_content"
-            version: "v1.1"
-          - commit: "76bdf9b55e2378432e0e6380ccedebb4a94ce483"
-            exclude: "docker_entrypoint,modify_file_content"
-            version: "v1.2"
-          - docker: "singularity"
-            commit: "76bdf9b55e2378432e0e6380ccedebb4a94ce483"
-            exclude: "docker_entrypoint,modify_file_content,iwd-container-entryname1"
-            on: "ubuntu-24.04"
-            python: "3.13"
-            version: "v1.2"
-          - docker: "kubernetes"
-            commit: "76bdf9b55e2378432e0e6380ccedebb4a94ce483"
-            exclude: "docker_entrypoint,modify_file_content"
-            on: "ubuntu-24.04"
-            python: "3.13"
-            version: "v1.2"
-          - on: "macos-13"
-            python: "3.13"
-            commit: "76bdf9b55e2378432e0e6380ccedebb4a94ce483"
-            exclude: "docker_entrypoint,modify_file_content"
-            version: "v1.2"
-    runs-on: ${{ matrix.on }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python }}
-          cache: pip
-          cache-dependency-path: | 
-            requirements.txt
-            test-requirements.txt
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-      - name: "Install Docker (MacOS X)"
-        uses: douglascamata/setup-docker-macos-action@v1-alpha.16
-        with:
-          colima-additional-options: '--mount /private/var/folders:w --mount-type virtiofs'
-        if: ${{ startsWith(matrix.on, 'macos-') }}
-      - uses: docker/setup-qemu-action@v3
-        if: ${{ startsWith(matrix.on, 'ubuntu-') }}
-      - name: "Install Apptainer"
-        uses: eWaterCycle/setup-apptainer@v2
-        with:
-          apptainer-version: 1.3.6
-        if: ${{ matrix.docker == 'singularity' }}
-      - name: "Install KinD"
-        uses: helm/kind-action@v1.12.0
-        with:
-          config: .github/kind/config.yaml
-          kubectl_version: v1.30.3
-          version: v0.21.0
-        if: ${{ matrix.docker == 'kubernetes' }}
-      - name: "Configure Calico on KinD"
-        run: |
-          kubectl apply -f https://docs.projectcalico.org/v3.25/manifests/calico.yaml
-          kubectl -n kube-system set env daemonset/calico-node FELIX_IGNORELOOSERPF=true
-        if: ${{ matrix.docker == 'kubernetes' }}
-      - name: "Install StreamFlow"
-        run: |
-          python -m pip install . --user
-      - name: "Test CWL ${{ matrix.version }} conformance"
-        env:
-          VERSION: ${{ matrix.version }}
-          COMMIT: ${{ matrix.commit }}
-          EXCLUDE: ${{ matrix.exclude }}
-          DOCKER: ${{ matrix.docker }}
-        run: ./cwl-conformance-test.sh
-      - name: "Upload test results"
-        if: ${{ !cancelled() }}
-        uses: codecov/test-results-action@v1
-        with:
-          flags: ${{ startsWith(matrix.on, 'macos-') && 'macos' || 'ubuntu' }}
-          token: ${{ secrets.CODECOV_TOKEN }}
-      - name: "Upload coverage report for conformance tests"
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ format('{0}-py{1}-cwl{2}-{3}-conformance-tests', matrix.on, matrix.python, matrix.version, matrix.docker) }}
-          path: |
-            ./coverage.xml
-          retention-days: 1
-          if-no-files-found: error
-  docker-image:
-    name: "StreamFlow Docker image tests"
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-      - name: "Build Docker image"
-        uses: docker/build-push-action@v6
-        with:
-          build-args: |
-            HELM_VERSION=v3.17.0
-          load: true
-          tags: alphaunito/streamflow:latest
-      - name: "Run test with Docker"
-        run: |
-          mkdir -p "${TMPDIR:-/tmp}"/project "${TMPDIR:-/tmp}"/results "${TMPDIR:-/tmp}"/streamflow
-          docker run --rm \
-            --mount type=bind,source="$(pwd)/tests/data/cwl/example",target="/streamflow/project" \
-            --mount type=bind,source="${TMPDIR:-/tmp}"/results,target="/streamflow/results" \
-            --mount type=bind,source="${TMPDIR:-/tmp}"/streamflow,target="/tmp/streamflow" \
-            alphaunito/streamflow:latest \
-            streamflow run /streamflow/project/streamflow.yml
-  documentation:
-    name: "Build Sphinx documentation"
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: 3.13
-          cache: pip
-          cache-dependency-path: |
-            docs/requirements.txt
-      - name: "Install Python Dependencies"
-        run: |
-          python -m pip install -r docs/requirements.txt
-      - name: "Build documentation and check for consistency"
-        env:
-          CHECKSUM: "3e5b9b31f71a3ee27e28d5ca66942c50497447f129b7dae7eb8f0ea5f84c39b7"
-        run: |
-          cd docs
-          HASH="$(make checksum | tail -n1)"
-          echo "Docs checksum is ${HASH}"
-          test "${HASH}" == "${CHECKSUM}"
-  test-flux:
-    runs-on: ubuntu-24.04
-    permissions:
-      packages: read
-    strategy:
-      fail-fast: false
-      matrix:
-        container: ["fluxrm/flux-sched:noble-v0.39.0-amd64"]
-    container:
-      image: ${{ matrix.container }}
-      options: "--platform=linux/amd64 --user root -it"
-    name: ${{ matrix.container }}
-    steps:
-      - name: Make Space
-        run: |
-          rm -rf /usr/share/dotnet
-          rm -rf /opt/ghc
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Install Python modules
-        run: |
-          apt update
-          apt install -yq python3-pip python3-venv
-          su fluxuser
-      - name: Install StreamFlow
-        run: |
-          python3 -m venv /tmp/venv
-          . /tmp/venv/bin/activate
-          pip install . 
-          pip install --upgrade --force-reinstall attrs lockfile
-          which streamflow
-      - name: Start Flux and Test Workflow
-        run: |
-          . /tmp/venv/bin/activate
-          which streamflow
-          cd examples/flux
-          flux start streamflow run streamflow.yml
   static-checks:
     name: "StreamFlow static checks"
     runs-on: ubuntu-24.04
     strategy:
       matrix:
-        step: [ "bandit", "lint" ]
+        step: [ "lint" ]
     env:
       TOXENV: ${{ matrix.step }}
     steps:
@@ -224,18 +35,18 @@ jobs:
           python -m pip install . --user
       - name: "Run StreamFlow static analysis via Tox"
         run: tox
-  unit-tests:
-    name: "StreamFlow unit tests"
+  blurb:
+    name: "StreamFlow blurb tests"
     strategy:
       matrix:
         on: [ "ubuntu-24.04"]
         python: [ "3.9", "3.10", "3.11", "3.12", "3.13" ]
-        include:
-          - on: "macos-13"
-            python: "3.13"
+        retries: ["1", "2", "3", "4", "5"]
     runs-on: ${{ matrix.on }}
     env:
-      TOXENV: ${{ format('py{0}-unit', matrix.python) }}
+      VERSION: "v1.2"
+      COMMIT: "main"
+      REPO: "cwl-v1.2"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -248,66 +59,18 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-      - name: "Install Docker (MacOs X)"
-        uses: douglascamata/setup-docker-macos-action@v1-alpha.16
-        with:
-          colima-additional-options: '--mount /private/var/folders:w --mount-type virtiofs'
-        if: ${{ startsWith(matrix.on, 'macos-') }}
       - uses: docker/setup-qemu-action@v3
-        if: ${{ startsWith(matrix.on, 'ubuntu-') }}
-      - name: "Install Apptainer"
-        uses: eWaterCycle/setup-apptainer@v2
-        with:
-          apptainer-version: 1.3.6
-        if: ${{ startsWith(matrix.on, 'ubuntu-') }}
-      - name: "Install KinD"
-        uses: helm/kind-action@v1.12.0
-        with:
-          config: .github/kind/config.yaml
-          kubectl_version: v1.30.3
-          version: v0.21.0
-        if: ${{ startsWith(matrix.on, 'ubuntu-') }}
-      - name: "Configure Calico on KinD"
-        run: |
-          kubectl apply -f https://docs.projectcalico.org/v3.25/manifests/calico.yaml
-          kubectl -n kube-system set env daemonset/calico-node FELIX_IGNORELOOSERPF=true
         if: ${{ startsWith(matrix.on, 'ubuntu-') }}
       - name: "Install Python Dependencies and StreamFlow"
         run: |
           python -m pip install tox --user
           python -m pip install . --user
-      - name: "Run StreamFlow tests via Tox"
-        run: python -m tox
-      - name: "Upload test results"
-        if: ${{ !cancelled() }}
-        uses: codecov/test-results-action@v1
-        with:
-          flags: ${{ startsWith(matrix.on, 'macos-') && 'macos' || 'ubuntu' }}
-          token: ${{ secrets.CODECOV_TOKEN }}
-      - name: "Upload coverage report for unit tests"
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ format('{0}-py{1}-unit-tests', matrix.on, matrix.python) }}
-          path: |
-            ./coverage.xml
-          retention-days: 1
-          if-no-files-found: error
-  upload-to-codecov:
-    name: "Codecov report upload"
-    needs: ["cwl-conformance", "unit-tests"]
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - name: "Download conformance tests artifacts"
-        uses: actions/download-artifact@v4
-        with:
-          pattern: "*-conformance-tests"
-      - name: "Download unit tests artifacts"
-        uses: actions/download-artifact@v4
-        with:
-          pattern: "*-unit-tests"
-      - name: "Upload coverage to Codecov"
-        uses: codecov/codecov-action@v5
-        with:
-          fail_ci_if_error: true
-          token: ${{ secrets.CODECOV_TOKEN }}
+      - name: "Download CWL tests"
+        run: |
+          wget "https://github.com/common-workflow-language/${REPO}/archive/${COMMIT}.tar.gz"
+          tar xzf "${COMMIT}.tar.gz"
+      - name: "Run blurb"
+        run: |
+          cd ${REPO}-${COMMIT}
+          cwl-runner --version
+          cwl-runner tests/inpdir_update_wf.cwl tests/empty.json --debug

@@ -367,6 +367,10 @@ class DefaultDataManager(DataManager):
                 ):
                     # Wait for the source location to be available on the destination path
                     await primary_loc.available.wait()
+                    logger.info(
+                        f"Src {primary_loc.path} present in the dst location {dst_location}. "
+                        f"Waited source availability to coping to {dst_path}"
+                    )
                     # If yes, perform a symbolic link if possible
                     copy_tasks.append(
                         asyncio.create_task(
@@ -397,6 +401,9 @@ class DefaultDataManager(DataManager):
                 # Register path and data location for parent folder
                 self.register_path(dst_location, str(Path(loc_dst_path).parent))
                 # Register the new `DataLocation` object
+                logger.info(
+                    f"Registering new data location {str(loc_dst_path)} on {dst_location}"
+                )
                 dst_data_location = DataLocation(
                     location=dst_location,
                     path=str(loc_dst_path),
@@ -420,6 +427,7 @@ class DefaultDataManager(DataManager):
                 )
         # Perform all the copy operations
         if remote_locations:
+            logger.info("remote_locations")
             copy_tasks.append(
                 asyncio.create_task(
                     _copy(
@@ -473,4 +481,7 @@ class DefaultDataManager(DataManager):
                         available=True,
                     )
                 self.register_relation(data_location, inner_data_location)
+            logger.info(
+                f"Data loc {data_location.path} on {data_location.location} is available"
+            )
             data_location.available.set()
