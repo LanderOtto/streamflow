@@ -367,10 +367,6 @@ class DefaultDataManager(DataManager):
                 ):
                     # Wait for the source location to be available on the destination path
                     await primary_loc.available.wait()
-                    logger.info(
-                        f"Src {primary_loc.path} present in the dst location {dst_location}. "
-                        f"Waited source availability to coping to {dst_path}"
-                    )
                     # If yes, perform a symbolic link if possible
                     copy_tasks.append(
                         asyncio.create_task(
@@ -427,7 +423,6 @@ class DefaultDataManager(DataManager):
                 )
         # Perform all the copy operations
         if remote_locations:
-            logger.info("remote_locations")
             copy_tasks.append(
                 asyncio.create_task(
                     _copy(
@@ -449,6 +444,7 @@ class DefaultDataManager(DataManager):
                     data_location.path,
                     context=self.context,
                     location=data_location.location,
+                    is_available=True,
                 )
                 data_location.data_type = (
                     DataType.SYMBOLIC_LINK
@@ -481,7 +477,4 @@ class DefaultDataManager(DataManager):
                         available=True,
                     )
                 self.register_relation(data_location, inner_data_location)
-            logger.info(
-                f"Data loc {data_location.path} on {data_location.location} is available"
-            )
             data_location.available.set()

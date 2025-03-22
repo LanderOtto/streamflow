@@ -715,9 +715,9 @@ class CWLTransferStep(TransferStep):
                 path=location, dst_deployment=dst_connector.deployment_name
             )
         ):
+            filepath = dst_path or (dst_dir / selected_location.relpath)
             try:
                 # Build unique destination path
-                filepath = dst_path or (dst_dir / selected_location.relpath)
                 if not self.prefix_path:
                     logger.info(
                         f"src {selected_location.path} exists on location {selected_location.location} -> "
@@ -735,10 +735,37 @@ class CWLTransferStep(TransferStep):
                     writable=self.writable,
                 )
             except FileExistsError:
-                filepath = dst_path or (dst_dir / selected_location.relpath)
-                logger.debug(
-                    f"File {str(filepath)} exists on {[loc for loc in dst_locations]} location"
+                while (
+                    len(
+                        self.workflow.context.data_manager.get_data_locations(
+                            str(filepath),
+                            selected_location.deployment,
+                            selected_location.location.name,
+                        )
+                    )
+                    == 0
+                ):
+                    logger.info(
+                        f"No data location for {filepath} on {selected_location.location} location"
+                    )
+                    # await asyncio.sleep(2)
+                    raise WorkflowExecutionException(
+                        f"No data location for {filepath} on {selected_location.location} location"
+                    )
+                await asyncio.gather(
+                    *(
+                        asyncio.create_task(loc.available.wait())
+                        for loc in self.workflow.context.data_manager.get_data_locations(
+                            str(filepath),
+                            selected_location.deployment,
+                            selected_location.location.name,
+                        )
+                    )
                 )
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        f"File {str(filepath)} already exists on {[str(loc) for loc in dst_locations]} location"
+                    )
 
             # Transform token value
             new_token_value = {

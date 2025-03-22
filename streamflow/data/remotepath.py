@@ -318,22 +318,24 @@ class LocalStreamFlowPath(
         *args,
         context: StreamFlowContext,
         location: ExecutionLocation | None = None,
+        is_available: bool = False,
     ):
         if sys.version_info < (3, 12):
             super().__init__()
         else:
             super().__init__(*args)
         self.context: StreamFlowContext = context
+        self.is_available: bool = is_available
         self.location: ExecutionLocation = location
-        self._is_available: bool = False
 
     async def _check_availability(self) -> None:
-        if not self._is_available:
-            await _get_data_location(self.context, self.location, str(self))
-            self._is_available = True
+        if False and not self.is_available:
+            await _get_data_location(
+                context=self.context, location=self.location, path=self.__str__()
+            )
+            self.is_available = True
 
     async def checksum(self) -> str | None:
-        await self._check_availability()
         if await self.is_file():
             loop = asyncio.get_running_loop()
             return await loop.run_in_executor(
@@ -342,17 +344,14 @@ class LocalStreamFlowPath(
         else:
             msg = "exists" if await self.exists() else "does not exist"
             logger.info(f"File {self} {msg} on local")
-            logger.info(f"ls -lha {os.system('ls -lha')}")
             return None
 
     async def exists(self) -> bool:
-        await self._check_availability()
         return cast(Path, super()).exists()
 
     async def glob(
         self, pattern, *, case_sensitive=None
     ) -> AsyncIterator[LocalStreamFlowPath]:
-        await self._check_availability()
         for path in glob.glob(str(self / pattern)):
             yield self.with_segments(path)
 
@@ -408,7 +407,12 @@ class LocalStreamFlowPath(
             return f.read(n)
 
     async def resolve(self, strict=False) -> LocalStreamFlowPath | None:
-        for loc in await _get_data_location(self.context, self.location, str(self)):
+        for loc in self.context.data_manager.get_data_locations(
+            path=self.__str__(),
+            deployment=self.location.deployment,
+            location_name=self.location.name,
+        ):
+            await loc.available.wait()
             if loc.data_type == DataType.PRIMARY:
                 return self.with_segments(loc.path)
         if await self.exists():
@@ -438,6 +442,7 @@ class LocalStreamFlowPath(
             return total_size
 
     async def symlink_to(self, target, target_is_directory=False) -> None:
+        await self._check_availability()
         return cast(Path, super()).symlink_to(
             target=target, target_is_directory=target_is_directory
         )
@@ -457,7 +462,12 @@ class LocalStreamFlowPath(
             yield dirpath, dirnames, filenames
 
     def with_segments(self, *pathsegments):
-        return type(self)(*pathsegments, context=self.context, location=self.location)
+        return type(self)(
+            *pathsegments,
+            context=self.context,
+            location=self.location,
+            is_available=self.is_available,
+        )
 
     async def write_text(self, data: str, **kwargs) -> int:
         return cast(Path, super()).write_text(data=data, **kwargs)
@@ -469,7 +479,13 @@ class RemoteStreamFlowPath(
 ):
     __slots__ = ("context", "connector", "location")
 
-    def __init__(self, *args, context: StreamFlowContext, location: ExecutionLocation):
+    def __init__(
+        self,
+        *args,
+        context: StreamFlowContext,
+        location: ExecutionLocation,
+        is_available: bool = False,
+    ):
         if sys.version_info < (3, 12):
             super().__init__()
         else:
@@ -478,14 +494,16 @@ class RemoteStreamFlowPath(
         self.connector: Connector = self.context.deployment_manager.get_connector(
             location.deployment
         )
+        self.is_available: bool = is_available
         self.location: ExecutionLocation = location
-        self._is_available: bool = False
         self._inner_path: StreamFlowPath | None = None
 
     async def _check_availability(self) -> None:
-        if not self._is_available:
-            await _get_data_location(self.context, self.location, str(self))
-            self._is_available = True
+        if not self.is_available:
+            await _get_data_location(
+                context=self.context, location=self.location, path=self.__str__()
+            )
+            self.is_available = True
 
     def _is_valid_inner_path(self, location: DataLocation) -> bool:
         return (
@@ -680,7 +698,12 @@ class RemoteStreamFlowPath(
 
     async def resolve(self, strict=False) -> RemoteStreamFlowPath | None:
         # If at least one primary location is present on the site, return its path
-        for loc in await _get_data_location(self.context, self.location, str(self)):
+        for loc in self.context.data_manager.get_data_locations(
+            path=self.__str__(),
+            deployment=self.location.deployment,
+            location_name=self.location.name,
+        ):
+            await loc.available.wait()
             if loc.data_type == DataType.PRIMARY:
                 return self.with_segments(loc.path)
         # Otherwise, analyse the remote path
@@ -708,7 +731,6 @@ class RemoteStreamFlowPath(
         if (inner_path := await self._get_inner_path()) != self:
             await inner_path.rmtree()
         else:
-            await self._check_availability()
             command = ["rm", "-rf ", self.__str__()]
             result, status = await self.connector.run(
                 location=self.location, command=command, capture_output=True
@@ -719,7 +741,6 @@ class RemoteStreamFlowPath(
         if (inner_path := await self._get_inner_path()) != self:
             return await inner_path.size()
         else:
-            await self._check_availability()
             command = [
                 "".join(
                     [
@@ -741,7 +762,6 @@ class RemoteStreamFlowPath(
         if (inner_path := await self._get_inner_path()) != self:
             await inner_path.symlink_to(target, target_is_directory=target_is_directory)
         else:
-            await self._check_availability()
             command = ["ln", "-snf", str(target), self.__str__()]
             result, status = await self.connector.run(
                 location=self.location, command=command, capture_output=True
@@ -765,7 +785,6 @@ class RemoteStreamFlowPath(
                     context=self.context, location=self.location, path=path
                 ), dirnames, filenames
         else:
-            await self._check_availability()
             paths = [self]
             while paths:
                 path = paths.pop()
