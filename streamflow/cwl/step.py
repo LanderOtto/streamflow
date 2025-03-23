@@ -748,10 +748,10 @@ class CWLTransferStep(TransferStep):
                     logger.info(
                         f"No data location for {filepath} on {selected_location.location} location"
                     )
-                    # await asyncio.sleep(2)
-                    raise WorkflowExecutionException(
-                        f"No data location for {filepath} on {selected_location.location} location"
-                    )
+                    await asyncio.sleep(2)
+                    # raise WorkflowExecutionException(
+                    #     f"No data location for {filepath} on {selected_location.location} location"
+                    # )
                 await asyncio.gather(
                     *(
                         asyncio.create_task(loc.available.wait())
