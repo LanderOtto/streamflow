@@ -749,6 +749,7 @@ class CWLTransferStep(TransferStep):
                         f"No data location for {filepath} on {selected_location.location} location"
                     )
                     await asyncio.sleep(2)
+                    # https://github.com/LanderOtto/streamflow/actions/runs/14014884025/job/39239305561
                     # raise WorkflowExecutionException(
                     #     f"No data location for {filepath} on {selected_location.location} location"
                     # )
